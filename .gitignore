@@ -1,0 +1,14 @@
+﻿__pycache__/
+*.pyc
+.env
+.DS_Store
+
+data/raw/
+data/synthetic_corruptions/
+outputs/
+checkpoints/
+wandb/
+*.pt
+*.pth
+*.bin
+*.safetensors
