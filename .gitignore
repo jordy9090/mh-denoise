@@ -1,73 +1,35 @@
 # Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
 .ipynb_checkpoints/
 
-# Env / secrets
+# Environments
 .env
+.venv/
+venv/
 .env.*
-*.key
-*.pem
+*.env
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
 
 # Logs
 *.log
 logs/
 outputs/logs/
 
-# Experiment outputs
-outputs/
-generation_outputs*/
-wandb/
-runs/
-
-# Model checkpoints / weights
-*.pt
-*.pth
-*.ckpt
-*.bin
-*.safetensors
-*.torch
-adapter_model*
-checkpoint*/
-step_*/
-
-# Data files
+# Generated experiment artifacts
 data/
-*.jsonl
-
-# External cloned repos
-external/
-
-# Cache
-.cache/
-.huggingface/
-
-# generated / heavy artifacts
 outputs/
-generation_outputs*/
-external/
-*.pt
-*.pth
-*.bin
-*.safetensors
-*.ckpt
+*.tgz
+*.tar.gz
+*.zip
 
-# generated data
-data/overleaf_full/
-data/overleaf_infermatch/
-data/faithful_denoise/
-data/faithful_denoise_v2/
-data/riskspan_denoise/
-
-# accidental shell fragments
-Diffusion
-Noise
-
-# python/cache
-__pycache__/
-*.pyc
-.ipynb_checkpoints/
+# Model / cache artifacts
+.cache/
+huggingface/
 wandb/
-runs/
-.env
-.env.*
