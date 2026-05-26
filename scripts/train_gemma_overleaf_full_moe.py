@@ -69,6 +69,34 @@ def find_ranges(target, spans):
     return ranges
 
 
+def resolve_target_modules(model, requested):
+    """Resolve PEFT target module suffixes for Gemma4 wrapper modules.
+
+    Gemma4 q_proj/v_proj can be wrapper modules such as Gemma4ClippableLinear,
+    while the actual supported PEFT target is the inner .linear module.
+    This keeps PEFT standard LoRA while avoiding custom LoRA replacement code.
+    """
+    requested = [x.strip() for x in requested.split(",") if x.strip()]
+    module_names = [name for name, _ in model.named_modules()]
+    resolved = []
+    for t in requested:
+        inner = f"{t}.linear"
+        if any(name.endswith(inner) for name in module_names):
+            resolved.append(inner)
+        elif any(name.endswith(t) for name in module_names):
+            resolved.append(t)
+        else:
+            resolved.append(t)
+    # preserve order, remove duplicates
+    dedup = []
+    for x in resolved:
+        if x not in dedup:
+            dedup.append(x)
+    print("requested target modules:", requested)
+    print("resolved target modules:", dedup)
+    return dedup
+
+
 class DenoiseDS(Dataset):
     def __init__(self, path, tok, max_source_len=768, max_target_len=192, lambda_y=1.5):
         self.rows = read_jsonl(path)
@@ -192,7 +220,8 @@ def main():
     model.config.use_cache = False
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
 
-    cfg = LoraConfig(task_type=TaskType.CAUSAL_LM, r=args.r, lora_alpha=args.alpha, lora_dropout=args.dropout, target_modules=[x.strip() for x in args.target_modules.split(",") if x.strip()], bias="none")
+    target_modules = resolve_target_modules(model, args.target_modules)
+    cfg = LoraConfig(task_type=TaskType.CAUSAL_LM, r=args.r, lora_alpha=args.alpha, lora_dropout=args.dropout, target_modules=target_modules, bias="none")
     model = get_peft_model(model, cfg)
     model.print_trainable_parameters()
     device = next(model.parameters()).device
