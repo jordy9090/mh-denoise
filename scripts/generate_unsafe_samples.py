@@ -16,7 +16,7 @@ DIMENSIONS = [
     "toxicity",
 ]
 
-MODEL_ID = "google/gemma-3-4b-it"
+MODEL_ID = "google/gemma-4-E4B-it"
 
 
 def build_prompt(question: str, safe_response: str, target_dimension: str) -> str:

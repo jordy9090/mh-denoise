@@ -89,7 +89,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--model", default="google/gemma-3-4b-it")
+    parser.add_argument("--model", default="google/gemma-4-E4B-it")
     parser.add_argument("--use_dimension", action="store_true")
     args = parser.parse_args()
 
@@ -121,7 +121,7 @@ def main():
             out.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     print(f"Saved to {args.output}")
-git add scripts/run_prompt_cleaning_baseline.py
+
 
 if __name__ == "__main__":
     main()
