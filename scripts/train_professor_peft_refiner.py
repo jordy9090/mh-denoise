@@ -125,23 +125,61 @@ def build_prompt(tokenizer, ex: Dict) -> str:
 
 
 def resolve_target_modules(model, requested: str) -> List[str]:
+    """Resolve LoRA targets only on the text/language generation path.
+
+    Gemma-4-E4B-it exposes audio_tower and vision_tower modules with the same
+    q_proj/k_proj/v_proj/o_proj names. Suffix-only PEFT targeting therefore
+    attaches LoRA to multimodal towers. For a text-only response refiner, we
+    explicitly exclude audio/vision/encoder modules and return full module names.
+    """
     requested_modules = [x.strip() for x in requested.split(",") if x.strip()]
+    bad_parts = (
+        "audio_tower",
+        "vision_tower",
+        "visual",
+        "image",
+        "multimodal",
+        "multi_modal",
+        "encoder",
+    )
+
     names = [name for name, _ in model.named_modules()]
     resolved = []
-    for module_name in requested_modules:
-        inner = f"{module_name}.linear"
-        if any(name.endswith(inner) for name in names):
-            resolved.append(inner)
-        elif any(name.endswith(module_name) for name in names):
-            resolved.append(module_name)
-        else:
-            resolved.append(module_name)
+
+    for name in names:
+        low = name.lower()
+        if any(bad in low for bad in bad_parts):
+            continue
+
+        for module_name in requested_modules:
+            if name.endswith(f"{module_name}.linear") or name.endswith(module_name):
+                resolved.append(name)
+                break
+
+    # preserve order, remove duplicates
     dedup = []
     for item in resolved:
         if item not in dedup:
             dedup.append(item)
+
+    if not dedup:
+        print("[debug] available q/k/v/o-like modules excluding bad_parts:")
+        for name in names:
+            low = name.lower()
+            if any(bad in low for bad in bad_parts):
+                continue
+            if any(x in name for x in ["q_proj", "k_proj", "v_proj", "o_proj"]):
+                print(" ", name)
+        raise ValueError(
+            "No text-side LoRA target modules found. Inspect model.named_modules()."
+        )
+
     print("requested target modules:", requested_modules)
-    print("resolved target modules:", dedup)
+    print("resolved TEXT target modules count:", len(dedup))
+    for item in dedup[:30]:
+        print("  ", item)
+    if len(dedup) > 30:
+        print("  ...")
     return dedup
 
 
@@ -306,7 +344,6 @@ def main():
         train_dataset=train_ds,
         eval_dataset=valid_ds,
         data_collator=collator,
-        tokenizer=tokenizer,
     )
     trainer.train()
     trainer.save_model(Path(args.output_dir) / "final")
