@@ -1,14 +1,10 @@
-import argparse
-import json
-import re
+import argparse, json, re
 from pathlib import Path
-from typing import Dict, List
 
 import torch
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import PeftModel
-
 
 DIMS = [
     "overall_quality",
@@ -20,43 +16,32 @@ DIMS = [
 ]
 
 MASK_MARKERS = ["<MASK>", "[MASK]", "[needs revision]", "[NEEDS REVISION]"]
-BAD_OUTPUT_PATTERNS = [
-    r"\bQuestion:\b",
-    r"\bUnsafe response:\b",
-    r"\bAspect signal:\b",
-    r"\bRisk-deleted draft\b",
-    r"\bSafe response:\b",
-    r"<MASK>|\[MASK\]",
-]
 
-
-def read_jsonl(path: str):
+def read_jsonl(path):
+    rows = []
     with open(path, encoding="utf-8") as f:
         for line in f:
             if line.strip():
-                yield json.loads(line)
+                rows.append(json.loads(line))
+    return rows
 
-
-def write_jsonl(rows: List[Dict], path: str):
+def write_jsonl(rows, path):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        for row in rows:
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
-
-def get_field(ex: Dict, *names: str, default: str = "") -> str:
+def get_field(ex, *names, default=""):
     for name in names:
         value = ex.get(name)
         if value is not None and str(value).strip():
             return str(value)
     return default
 
-
-def clean_text(text: str) -> str:
+def clean_text(text):
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
-
-def sanitize_draft(text: str) -> str:
+def sanitize_draft(text):
     text = str(text or "")
     for marker in MASK_MARKERS:
         text = text.replace(marker, " ")
@@ -66,20 +51,19 @@ def sanitize_draft(text: str) -> str:
         return "No usable partial draft is available. Rewrite from the question and unsafe response."
     return text
 
-
-def format_aspect_signal(ex: Dict) -> str:
+def format_aspect_signal(ex):
     g = ex.get("g")
     if isinstance(g, list) and len(g) == len(DIMS):
         pairs = sorted(zip(DIMS, g), key=lambda x: float(x[1]), reverse=True)
         active = [f"{name}={float(score):.2f}" for name, score in pairs if float(score) >= 0.10]
         return ", ".join(active[:4]) if active else f"{pairs[0][0]}={float(pairs[0][1]):.2f}"
     for key in ["target_dimension", "condition_dim", "used_dimension", "predicted_dimension", "dimension"]:
-        if ex.get(key):
-            return str(ex[key])
+        value = ex.get(key)
+        if value:
+            return str(value)
     return "unspecified"
 
-
-def build_user_content(ex: Dict) -> str:
+def build_user_content(ex):
     q = clean_text(get_field(ex, "question", "query", "user_question"))
     u = clean_text(get_field(ex, "unsafe_response", "corrupted_response", "bad_response"))
     z = sanitize_draft(get_field(ex, "z_t", "draft", "masked_unsafe_draft", default=""))
@@ -87,6 +71,7 @@ def build_user_content(ex: Dict) -> str:
     t = ex.get("t", ex.get("corruption_level", ""))
     T = ex.get("T", "")
     t_str = f"{t}/{T}" if str(t) and str(T) else str(t)
+
     return (
         "Rewrite the unsafe counseling response into a safe final response.\n"
         "Use the question, the unsafe response, the aspect signal, and the corrupted draft.\n"
@@ -104,8 +89,7 @@ def build_user_content(ex: Dict) -> str:
         "- Encourage professional or trusted support for serious or persistent distress."
     )
 
-
-def build_prompt(tokenizer, ex: Dict) -> str:
+def build_prompt(tokenizer, ex):
     system = (
         "You are a careful mental-health response refiner. "
         "Your job is to transform unsafe or low-quality counseling answers into safe, empathetic, specific, professionally bounded answers."
@@ -118,69 +102,60 @@ def build_prompt(tokenizer, ex: Dict) -> str:
         return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     return f"System: {system}\n\nUser: {build_user_content(ex)}\n\nAssistant:"
 
+def cleanup(text):
+    text = text.strip()
 
-def cleanup(text: str) -> str:
-    text = str(text or "")
-    text = text.split("<eos>")[0]
-    for label in ["Safe response:", "Final response:", "Assistant:"]:
-        if label in text:
-            text = text.split(label, 1)[-1]
+    # Remove leaked section markers.
+    bad_markers = [
+        "Final response:",
+        "Safe response:",
+        "Response:",
+        "Analysis:",
+        "Notes:",
+        "Draft:",
+        "Aspect signal:",
+        "Safety requirements:",
+        "FINAL RESPONSE",
+        "TOTAL RESPONSE",
+    ]
+    for m in bad_markers:
+        if m in text:
+            text = text.split(m)[-1].strip()
 
-    # Remove prompt/mask artifacts.
-    text = re.sub(r"<MASK>|\[MASK\]|\[needs revision\]", " ", text, flags=re.I)
+    # Cut common decoding artifacts observed in validation samples.
+    cut_patterns = [
+        r"\s*oi\b.*$",
+        r"\s*\.oi\b.*$",
+        r"\s*なければ.*$",
+        r"\s*</tr>.*$",
+        r"\s*/></tr>.*$",
+        r"\s*この質問.*$",
+    ]
+    for pat in cut_patterns:
+        text = re.sub(pat, "", text, flags=re.IGNORECASE)
 
-    # Gemma occasionally appends non-English tail garbage after a valid English answer.
-    # The dataset/output target is English, so we truncate at the first CJK/Cyrillic/Korean artifact.
-    text = re.split(r"[\u0400-\u04FF\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF]", text)[0]
+    # Remove stray HTML-like fragments.
+    text = re.sub(r"<[^>]+>", "", text)
 
+    # Normalize whitespace.
     text = re.sub(r"\s+", " ", text).strip()
-    text = re.sub(r"\s+([.,!?;:])", r"\1", text)
-    text = re.sub(r"([,.;:])\1+", r"\1", text)
-    text = re.sub(r"\b(\w+)( \1\b){2,}", r"\1", text, flags=re.I)
-    return text.strip()
 
-
-def output_score(text: str) -> float:
-    score = 0.0
-    words = text.split()
-    low = text.lower()
-    if 35 <= len(words) <= 190:
-        score += 2.0
-    else:
-        score -= 2.0
-    for pat in BAD_OUTPUT_PATTERNS:
-        if re.search(pat, text, flags=re.I):
-            score -= 5.0
-    repeated = sum(1 for i in range(1, len(words)) if words[i].lower() == words[i - 1].lower())
-    score -= repeated * 1.0
-    if any(x in low for x in ["it makes sense", "understandable", "it sounds", "sorry"]):
-        score += 1.0
-    if any(x in low for x in ["professional", "trusted", "counselor", "therapist", "support"]):
-        score += 0.5
-    if any(x in low for x in ["you have", "you must", "you need medication", "diagnos"]):
-        score -= 2.0
-    return score
-
+    return text
 
 @torch.no_grad()
-def generate_candidate(model, tokenizer, ex: Dict, args):
-    prompt = build_prompt(tokenizer, ex)
-    enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=args.max_source_len).to(model.device)
+def generate_one(model, tok, prompt, max_source_len, max_new_tokens):
+    enc = tok(prompt, return_tensors="pt", truncation=True, max_length=max_source_len).to(model.device)
     gen = model.generate(
         **enc,
-        max_new_tokens=args.max_new_tokens,
-        do_sample=args.do_sample,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        num_beams=args.num_beams,
-        repetition_penalty=args.repetition_penalty,
-        no_repeat_ngram_size=args.no_repeat_ngram_size,
-        pad_token_id=tokenizer.pad_token_id,
-        eos_token_id=tokenizer.eos_token_id,
+        max_new_tokens=max_new_tokens,
+        do_sample=False,
+        repetition_penalty=1.18,
+        no_repeat_ngram_size=5,
+        pad_token_id=tok.pad_token_id,
+        eos_token_id=tok.eos_token_id,
     )
     new_tokens = gen[0][enc["input_ids"].shape[-1]:]
-    return cleanup(tokenizer.decode(new_tokens, skip_special_tokens=True))
-
+    return cleanup(tok.decode(new_tokens, skip_special_tokens=True))
 
 def main():
     ap = argparse.ArgumentParser()
@@ -189,20 +164,14 @@ def main():
     ap.add_argument("--input", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--max_source_len", type=int, default=896)
-    ap.add_argument("--max_new_tokens", type=int, default=220)
-    ap.add_argument("--num_beams", type=int, default=1)
-    ap.add_argument("--do_sample", action="store_true")
-    ap.add_argument("--temperature", type=float, default=0.7)
-    ap.add_argument("--top_p", type=float, default=0.9)
-    ap.add_argument("--candidates", type=int, default=1)
-    ap.add_argument("--repetition_penalty", type=float, default=1.08)
-    ap.add_argument("--no_repeat_ngram_size", type=int, default=4)
+    ap.add_argument("--max_new_tokens", type=int, default=180)
+    ap.add_argument("--limit", type=int, default=0)
     args = ap.parse_args()
 
-    tokenizer = AutoTokenizer.from_pretrained(args.adapter_dir, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "left"
+    tok = AutoTokenizer.from_pretrained(args.adapter_dir, trust_remote_code=True)
+    if tok.pad_token is None:
+        tok.pad_token = tok.eos_token
+    tok.padding_side = "left"
 
     bnb = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -210,6 +179,7 @@ def main():
         bnb_4bit_compute_dtype=torch.bfloat16,
         bnb_4bit_use_double_quant=True,
     )
+
     base = AutoModelForCausalLM.from_pretrained(
         args.base_model,
         quantization_config=bnb,
@@ -220,24 +190,22 @@ def main():
     model = PeftModel.from_pretrained(base, args.adapter_dir)
     model.eval()
 
-    rows = list(read_jsonl(args.input))
+    rows = read_jsonl(args.input)
+    if args.limit and args.limit > 0:
+        rows = rows[:args.limit]
+
     outs = []
     for ex in tqdm(rows):
-        cands = []
-        for _ in range(max(1, args.candidates)):
-            text = generate_candidate(model, tokenizer, ex, args)
-            cands.append((output_score(text), text))
-        cands.sort(key=lambda x: x[0], reverse=True)
-        best_score, best_text = cands[0]
+        prompt = build_prompt(tok, ex)
+        pred = generate_one(model, tok, prompt, args.max_source_len, args.max_new_tokens)
         out = dict(ex)
-        out["professor_peft_response"] = best_text
-        out["professor_peft_score"] = best_score
-        out["professor_peft_candidates"] = [text for _, text in cands]
-        out["method"] = "professor_style_standard_peft_lora_refiner"
+        out["professor_peft_response"] = pred
+        out["method"] = "professor_peft_safecorrupt"
+        out["adapter_dir"] = args.adapter_dir
         outs.append(out)
-    write_jsonl(outs, args.output)
-    print(f"saved to {args.output}")
 
+    write_jsonl(outs, args.output)
+    print("saved to", args.output)
 
 if __name__ == "__main__":
     main()
