@@ -3,9 +3,9 @@ import re
 from pathlib import Path
 
 import pandas as pd
+from datasets import load_dataset
 
 
-INPUT_PATH = "/home/user/.cache/huggingface/hub/datasets--izi-ano--CounselBench-Eval/snapshots/8d56a96ea1de3f3f190f77f4ca9bc3503d731af7/counselbench_eval.csv"
 OUTPUT_PATH = "data/raw/counselbench_eval_100.jsonl"
 
 
@@ -16,8 +16,14 @@ def clean_text(x):
     return x
 
 
+def load_counselbench_eval():
+    # H100에 HF cache가 없을 수 있어서 datasets로 직접 로드
+    ds = load_dataset("izi-ano/CounselBench-Eval", split="test")
+    return ds.to_pandas()
+
+
 def main():
-    df = pd.read_csv(INPUT_PATH)
+    df = load_counselbench_eval()
 
     for col in ["overall_score", "empathy_score", "specificity_score", "factual_consistency_score", "toxicity_score"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
