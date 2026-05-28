@@ -1,3 +1,4 @@
+import argparse
 import json
 import re
 from pathlib import Path
@@ -23,6 +24,11 @@ def load_counselbench_eval():
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", default=OUTPUT_PATH)
+    parser.add_argument("--n_questions", type=int, default=100)
+    args = parser.parse_args()
+
     df = load_counselbench_eval()
 
     for col in ["overall_score", "empathy_score", "specificity_score", "factual_consistency_score", "toxicity_score"]:
@@ -46,13 +52,13 @@ def main():
 
     safe_df = safe_df.sort_values("score_sum", ascending=False)
     safe_df = safe_df.drop_duplicates(subset=["questionID"])
-    safe_df = safe_df.head(100)
+    safe_df = safe_df.head(args.n_questions)
 
     print("selected unique questions:", len(safe_df))
 
-    Path(OUTPUT_PATH).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
 
-    with open(OUTPUT_PATH, "w", encoding="utf-8") as out:
+    with open(args.output, "w", encoding="utf-8") as out:
         for new_i, (_, row) in enumerate(safe_df.iterrows()):
             record = {
                 "id": f"cb_eval_{new_i:04d}",
@@ -64,7 +70,7 @@ def main():
             }
             out.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    print(f"saved to {OUTPUT_PATH}")
+    print(f"saved to {args.output}")
 
 
 if __name__ == "__main__":

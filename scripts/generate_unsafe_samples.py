@@ -1,3 +1,4 @@
+import argparse
 import json
 import re
 from pathlib import Path
@@ -110,10 +111,14 @@ def generate_one(model, tokenizer, prompt: str) -> dict:
 
 
 def main():
-    input_path = "data/raw/counselbench_eval_100.jsonl"
-    output_path = "data/synthetic_corruptions/counselbench_eval_100_6dim_v1.jsonl"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", default="data/raw/counselbench_eval_100.jsonl")
+    parser.add_argument("--output", default="data/synthetic_corruptions/counselbench_eval_100_6dim_v1.jsonl")
+    parser.add_argument("--version", default="v1")
+    parser.add_argument("--source", default="sample_test")
+    args = parser.parse_args()
 
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading model: {MODEL_ID}")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
@@ -124,9 +129,9 @@ def main():
     )
     model.eval()
 
-    rows = list(load_jsonl(input_path))
+    rows = list(load_jsonl(args.input))
 
-    with open(output_path, "w", encoding="utf-8") as out:
+    with open(args.output, "w", encoding="utf-8") as out:
         for i, ex in enumerate(tqdm(rows)):
             question = ex["question"]
             safe_response = ex["safe_response"]
@@ -146,14 +151,14 @@ def main():
                     "target_dimension": dim,
                     "violation_vector": violation_vector,
                     "brief_reason": result.get("brief_reason", ""),
-                    "source": "sample_test",
+                    "source": args.source,
                     "generator": MODEL_ID,
-                    "version": "v1",
+                    "version": args.version,
                 }
 
                 out.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    print(f"Saved to {output_path}")
+    print(f"Saved to {args.output}")
 
 
 if __name__ == "__main__":
