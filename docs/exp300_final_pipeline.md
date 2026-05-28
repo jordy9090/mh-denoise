@@ -2,15 +2,56 @@
 
 This pipeline preserves the pilot files under `data/splits`, `data/overleaf_infermatch`, and existing `outputs/` paths. The expanded experiment writes to `exp300` paths only.
 
-## 1. Generate 300 safe CounselBench-Eval rows
+## 0. Audit Safe Target Pool
+
+Inspect all available splits in `izi-ano/CounselBench-Eval` before selecting the filter level:
+
+```bash
+python scripts/audit_counselbench_safe_pool.py
+```
+
+Choose the first filter that reaches at least 300 unique questions on all splits:
+
+- use `strict` if all-splits strict has at least 300 unique questions
+- else use `relaxed_1`
+- else use `relaxed_2`
+- else stop and use the broader CounselBench-family fallback script below
+
+Do not relax toxicity, medical advice, or factual consistency constraints.
+
+## 1. Prepare 300 Safe CounselBench Targets
+
+Set `--filter_level` from the audit result. This example uses `relaxed_1`; change it to `strict` or `relaxed_2` based on Step 0.
 
 ```bash
 python scripts/prepare_counselbench_eval_100.py \
   --n_questions 300 \
+  --splits all \
+  --filter_level relaxed_1 \
+  --shuffle \
+  --seed 42 \
   --output data/raw/counselbench_eval_300.jsonl
 ```
 
-## 2. Generate 6-dimension unsafe corruptions
+If all filters on `CounselBench-Eval` are insufficient, run the explicit fallback. It only uses CounselBench-family sources referenced in this repo and stops with a clear error if 300 safe targets cannot be obtained.
+
+```bash
+python scripts/prepare_counselbench_safe_targets.py \
+  --n_questions 300 \
+  --shuffle \
+  --seed 42 \
+  --output data/raw/counselbench_eval_300.jsonl
+```
+
+Sanity check safe target count:
+
+```bash
+wc -l data/raw/counselbench_eval_300.jsonl
+```
+
+Expected target: `300`.
+
+## 2. Generate 6-Dimension Unsafe Corruptions
 
 This produces 300 x 6 = 1800 base unsafe-safe pairs.
 
@@ -22,9 +63,17 @@ python scripts/generate_unsafe_samples.py \
   --source counselbench_eval_exp300
 ```
 
-## 3. Split base pairs
+Sanity check synthetic corruption count:
 
-The split is question-grouped to reduce same-question leakage across train/valid/test. Expected counts for 300 questions and six dimensions are train 1260, valid 180, test 360.
+```bash
+wc -l data/synthetic_corruptions/counselbench_eval_300_6dim_v1.jsonl
+```
+
+Expected target: `1800`.
+
+## 3. Split Base Pairs
+
+The split is question-grouped to reduce same-question leakage across train/valid/test. Expected counts for 300 questions and six dimensions are about train 1260, valid 180, test 360.
 
 ```bash
 python scripts/split_corruption_dataset.py \
@@ -39,7 +88,18 @@ python scripts/split_corruption_dataset.py \
   --seed 42
 ```
 
-## 4. Generate inference-matched denoising data
+Sanity check split counts:
+
+```bash
+wc -l \
+  data/splits_exp300/train_mdlm.jsonl \
+  data/splits_exp300/valid_mdlm.jsonl \
+  data/splits_exp300/test.jsonl
+```
+
+Expected target: about `1260 / 180 / 360`, total `1800`.
+
+## 4. Generate Inference-Matched Denoising Data
 
 Set these to the existing trained router and span-risk scorer directories before running:
 
@@ -72,9 +132,28 @@ python scripts/prepare_overleaf_infermatch_data.py \
   --seed 42
 ```
 
-Expected infermatch counts are train 6300 and valid 900. Each base row expands to five variants: one `empty` at `t=0`, two `unsafe` at `t=2`, one `unsafe` at `t=3`, and one `unsafe` at `t=4`.
+Sanity check infermatch counts and source/timestep distributions:
 
-## 5. Sanity checks
+```bash
+wc -l \
+  data/overleaf_infermatch_exp300/train.jsonl \
+  data/overleaf_infermatch_exp300/valid.jsonl
+
+python scripts/sanity_check_denoising_jsonl.py \
+  --input data/overleaf_infermatch_exp300/train.jsonl \
+  --input data/overleaf_infermatch_exp300/valid.jsonl
+```
+
+Each base row expands to five variants: one `empty` at `t=0`, two `unsafe` at `t=2`, one `unsafe` at `t=3`, and one `unsafe` at `t=4`.
+
+Expected target:
+
+- infermatch train = train base x 5
+- infermatch valid = valid base x 5
+- `source`: `empty = base`, `unsafe = base x 4`
+- `t`: `0 = base`, `2 = base x 2`, `3 = base`, `4 = base`
+
+## 5. Combined Sanity Check
 
 ```bash
 python scripts/sanity_check_denoising_jsonl.py \
@@ -85,7 +164,7 @@ python scripts/sanity_check_denoising_jsonl.py \
   data/overleaf_infermatch_exp300/valid.jsonl
 ```
 
-## 6. Train Q/K/V/O PEFT denoiser
+## 6. Train Q/K/V/O PEFT Denoiser
 
 ```bash
 OUT=outputs/models/gemma4_peft_langqkvo_infermatch_exp300_main
@@ -119,7 +198,7 @@ tail -f outputs/logs/train_gemma4_peft_langqkvo_infermatch_exp300_main.log
 
 The main training script uses HuggingFace PEFT LoRA and risk-weighted token-level CE through `target_weight_spans`.
 
-## 7. Validation inference
+## 7. Validation Inference
 
 ```bash
 python scripts/run_gemma_peft_real_inference.py \
@@ -136,13 +215,13 @@ python scripts/run_gemma_peft_real_inference.py \
   --no_repeat_ngram_size 4
 ```
 
-## 8. Extract validation unsafe_t4
+## 8. Extract Validation Unsafe T4
 
 ```bash
 python -c "import json; inp='outputs/refinement/gemma4_peft_langqkvo_infermatch_exp300_valid_modes.jsonl'; out='outputs/refinement/gemma4_peft_langqkvo_infermatch_exp300_valid_unsafe_t4.jsonl'; rows=[json.loads(l) for l in open(inp,encoding='utf-8') if l.strip()]; rows=[r for r in rows if r.get('mode')=='unsafe_t4']; f=open(out,'w',encoding='utf-8'); [f.write(json.dumps(r,ensure_ascii=False)+'\n') for r in rows]; f.close(); print('wrote',len(rows),out)"
 ```
 
-## 9. Final test inference
+## 9. Final Test Inference
 
 Run this only after validation settings are fixed.
 
