@@ -2,51 +2,26 @@
 
 This pipeline preserves the pilot files under `data/splits`, `data/overleaf_infermatch`, and existing `outputs/` paths. The expanded experiment writes to `exp300` paths only.
 
-## 0. Audit Safe Target Pool
+## 0. Safe Target Source Decision
 
-Inspect all available splits in `izi-ano/CounselBench-Eval` before selecting the filter level:
+`izi-ano/CounselBench-Eval` has 2000 rows but only 100 unique questions, so it remains a pilot/evaluation reference and is not used for exp300 safe targets.
 
-```bash
-python scripts/audit_counselbench_safe_pool.py
-```
+For exp300, prepare 300 unique safe targets from `nbertagnolli/counsel-chat`, following the CounselBench preprocessing spirit: one answer per unique question, excluded sensitive topics, answer length cap, and highest-upvoted answer selection.
 
-Choose the first filter that reaches at least 300 unique questions on all splits:
-
-- use `strict` if all-splits strict has at least 300 unique questions
-- else use `relaxed_1`
-- else use `relaxed_2`
-- else stop and use the broader CounselBench-family fallback script below
-
-Do not relax toxicity, medical advice, or factual consistency constraints.
-
-## 1. Prepare 300 Safe CounselBench Targets
-
-Set `--filter_level` from the audit result. This example uses `relaxed_1`; change it to `strict` or `relaxed_2` based on Step 0.
+## 1. Prepare 300 Safe CounselChat Targets
 
 ```bash
-python scripts/prepare_counselbench_eval_100.py \
-  --n_questions 300 \
-  --splits all \
-  --filter_level relaxed_1 \
-  --shuffle \
-  --seed 42 \
-  --output data/raw/counselbench_eval_300.jsonl
-```
-
-If all filters on `CounselBench-Eval` are insufficient, run the explicit fallback. It only uses CounselBench-family sources referenced in this repo and stops with a clear error if 300 safe targets cannot be obtained.
-
-```bash
-python scripts/prepare_counselbench_safe_targets.py \
+python scripts/prepare_counselchat_safe_targets.py \
   --n_questions 300 \
   --shuffle \
   --seed 42 \
-  --output data/raw/counselbench_eval_300.jsonl
+  --output data/raw/counselchat_300_safe_targets.jsonl
 ```
 
 Sanity check safe target count:
 
 ```bash
-wc -l data/raw/counselbench_eval_300.jsonl
+wc -l data/raw/counselchat_300_safe_targets.jsonl
 ```
 
 Expected target: `300`.
@@ -57,16 +32,16 @@ This produces 300 x 6 = 1800 base unsafe-safe pairs.
 
 ```bash
 python scripts/generate_unsafe_samples.py \
-  --input data/raw/counselbench_eval_300.jsonl \
-  --output data/synthetic_corruptions/counselbench_eval_300_6dim_v1.jsonl \
+  --input data/raw/counselchat_300_safe_targets.jsonl \
+  --output data/synthetic_corruptions/counselchat_300_6dim_v1.jsonl \
   --version exp300_v1 \
-  --source counselbench_eval_exp300
+  --source counselchat_exp300
 ```
 
 Sanity check synthetic corruption count:
 
 ```bash
-wc -l data/synthetic_corruptions/counselbench_eval_300_6dim_v1.jsonl
+wc -l data/synthetic_corruptions/counselchat_300_6dim_v1.jsonl
 ```
 
 Expected target: `1800`.
@@ -77,7 +52,7 @@ The split is question-grouped to reduce same-question leakage across train/valid
 
 ```bash
 python scripts/split_corruption_dataset.py \
-  --input data/synthetic_corruptions/counselbench_eval_300_6dim_v1.jsonl \
+  --input data/synthetic_corruptions/counselchat_300_6dim_v1.jsonl \
   --out_dir data/splits_exp300 \
   --group_by_question \
   --valid_ratio 0.1 \
