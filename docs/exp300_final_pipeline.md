@@ -74,7 +74,7 @@ wc -l \
 
 Expected target: about `1260 / 180 / 360`, total `1800`.
 
-## 4. Generate Inference-Matched Denoising Data
+## 4. Generate V2 Full-Mixture Denoising Data
 
 Set these to the existing trained router and span-risk scorer directories before running:
 
@@ -83,12 +83,14 @@ export ROUTER_DIR=outputs/models/aspect_router/final
 export RISK_SCORER_DIR=outputs/models/span_risk_multilabel/final
 ```
 
+This v2 path preserves the v1 files under `data/overleaf_infermatch_exp300/`. It adds the full corruption-source mixture: `empty`, `unsafe`, `safe`, and `bridge`.
+
 Train split:
 
 ```bash
-python scripts/prepare_overleaf_infermatch_data.py \
+python scripts/prepare_overleaf_infermatch_data_v2.py \
   --input data/splits_exp300/train_mdlm.jsonl \
-  --output data/overleaf_infermatch_exp300/train.jsonl \
+  --output data/overleaf_infermatch_exp300_v2/train.jsonl \
   --router_dir "$ROUTER_DIR" \
   --risk_scorer_dir "$RISK_SCORER_DIR" \
   --T 4 \
@@ -98,35 +100,35 @@ python scripts/prepare_overleaf_infermatch_data.py \
 Valid split:
 
 ```bash
-python scripts/prepare_overleaf_infermatch_data.py \
+python scripts/prepare_overleaf_infermatch_data_v2.py \
   --input data/splits_exp300/valid_mdlm.jsonl \
-  --output data/overleaf_infermatch_exp300/valid.jsonl \
+  --output data/overleaf_infermatch_exp300_v2/valid.jsonl \
   --router_dir "$ROUTER_DIR" \
   --risk_scorer_dir "$RISK_SCORER_DIR" \
   --T 4 \
-  --seed 42
+  --seed 43
 ```
 
 Sanity check infermatch counts and source/timestep distributions:
 
 ```bash
 wc -l \
-  data/overleaf_infermatch_exp300/train.jsonl \
-  data/overleaf_infermatch_exp300/valid.jsonl
+  data/overleaf_infermatch_exp300_v2/train.jsonl \
+  data/overleaf_infermatch_exp300_v2/valid.jsonl
 
 python scripts/sanity_check_denoising_jsonl.py \
-  --input data/overleaf_infermatch_exp300/train.jsonl \
-  --input data/overleaf_infermatch_exp300/valid.jsonl
+  --input data/overleaf_infermatch_exp300_v2/train.jsonl \
+  --input data/overleaf_infermatch_exp300_v2/valid.jsonl
 ```
 
-Each base row expands to five variants: one `empty` at `t=0`, two `unsafe` at `t=2`, one `unsafe` at `t=3`, and one `unsafe` at `t=4`.
+Each base row expands to seven variants: one `empty` at `t=0`, two `unsafe` at `t=2`, one `unsafe` at `t=3`, one `unsafe` at `t=4`, one `safe` at `t=2`, and one `bridge` at `t=2`.
 
 Expected target:
 
-- infermatch train = train base x 5
-- infermatch valid = valid base x 5
-- `source`: `empty = base`, `unsafe = base x 4`
-- `t`: `0 = base`, `2 = base x 2`, `3 = base`, `4 = base`
+- infermatch train = train base x 7, expected `8820` for 1260 base rows
+- infermatch valid = valid base x 7, expected `1260` for 180 base rows
+- `source`: `empty = base`, `unsafe = base x 4`, `safe = base`, `bridge = base`
+- `t`: `0 = base`, `2 = base x 4`, `3 = base`, `4 = base`
 
 ## 5. Combined Sanity Check
 
@@ -135,20 +137,20 @@ python scripts/sanity_check_denoising_jsonl.py \
   data/splits_exp300/train_mdlm.jsonl \
   data/splits_exp300/valid_mdlm.jsonl \
   data/splits_exp300/test.jsonl \
-  data/overleaf_infermatch_exp300/train.jsonl \
-  data/overleaf_infermatch_exp300/valid.jsonl
+  data/overleaf_infermatch_exp300_v2/train.jsonl \
+  data/overleaf_infermatch_exp300_v2/valid.jsonl
 ```
 
 ## 6. Train Q/K/V/O PEFT Denoiser
 
 ```bash
-OUT=outputs/models/gemma4_peft_langqkvo_infermatch_exp300_main
-LOG=outputs/logs/train_gemma4_peft_langqkvo_infermatch_exp300_main.log
+OUT=outputs/models/gemma4_peft_langqkvo_infermatch_exp300_v2_main
+LOG=outputs/logs/train_gemma4_peft_langqkvo_infermatch_exp300_v2_main.log
 
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 nohup python -u scripts/train_gemma_peft_denoiser.py \
-  --train_file data/overleaf_infermatch_exp300/train.jsonl \
-  --valid_file data/overleaf_infermatch_exp300/valid.jsonl \
+  --train_file data/overleaf_infermatch_exp300_v2/train.jsonl \
+  --valid_file data/overleaf_infermatch_exp300_v2/valid.jsonl \
   --output_dir "$OUT" \
   --model google/gemma-4-E4B-it \
   --epochs 3 \
@@ -168,7 +170,7 @@ nohup python -u scripts/train_gemma_peft_denoiser.py \
 Follow the log:
 
 ```bash
-tail -f outputs/logs/train_gemma4_peft_langqkvo_infermatch_exp300_main.log
+tail -f outputs/logs/train_gemma4_peft_langqkvo_infermatch_exp300_v2_main.log
 ```
 
 The main training script uses HuggingFace PEFT LoRA and risk-weighted token-level CE through `target_weight_spans`.
@@ -178,11 +180,11 @@ The main training script uses HuggingFace PEFT LoRA and risk-weighted token-leve
 ```bash
 python scripts/run_gemma_peft_real_inference.py \
   --base_model google/gemma-4-E4B-it \
-  --adapter_dir outputs/models/gemma4_peft_langqkvo_infermatch_exp300_main/best \
+  --adapter_dir outputs/models/gemma4_peft_langqkvo_infermatch_exp300_v2_main/best \
   --router_dir "$ROUTER_DIR" \
   --risk_scorer_dir "$RISK_SCORER_DIR" \
   --input data/splits_exp300/valid_mdlm.jsonl \
-  --output outputs/refinement/gemma4_peft_langqkvo_infermatch_exp300_valid_modes.jsonl \
+  --output outputs/refinement/gemma4_peft_langqkvo_infermatch_exp300_v2_valid_modes.jsonl \
   --modes empty,unsafe_t2,unsafe_t3,unsafe_t4 \
   --max_new_tokens 120 \
   --temperature 0.0 \
@@ -193,7 +195,7 @@ python scripts/run_gemma_peft_real_inference.py \
 ## 8. Extract Validation Unsafe T4
 
 ```bash
-python -c "import json; inp='outputs/refinement/gemma4_peft_langqkvo_infermatch_exp300_valid_modes.jsonl'; out='outputs/refinement/gemma4_peft_langqkvo_infermatch_exp300_valid_unsafe_t4.jsonl'; rows=[json.loads(l) for l in open(inp,encoding='utf-8') if l.strip()]; rows=[r for r in rows if r.get('mode')=='unsafe_t4']; f=open(out,'w',encoding='utf-8'); [f.write(json.dumps(r,ensure_ascii=False)+'\n') for r in rows]; f.close(); print('wrote',len(rows),out)"
+python -c "import json; inp='outputs/refinement/gemma4_peft_langqkvo_infermatch_exp300_v2_valid_modes.jsonl'; out='outputs/refinement/gemma4_peft_langqkvo_infermatch_exp300_v2_valid_unsafe_t4.jsonl'; rows=[json.loads(l) for l in open(inp,encoding='utf-8') if l.strip()]; rows=[r for r in rows if r.get('mode')=='unsafe_t4']; f=open(out,'w',encoding='utf-8'); [f.write(json.dumps(r,ensure_ascii=False)+'\n') for r in rows]; f.close(); print('wrote',len(rows),out)"
 ```
 
 ## 9. Final Test Inference
@@ -203,11 +205,11 @@ Run this only after validation settings are fixed.
 ```bash
 python scripts/run_gemma_peft_real_inference.py \
   --base_model google/gemma-4-E4B-it \
-  --adapter_dir outputs/models/gemma4_peft_langqkvo_infermatch_exp300_main/best \
+  --adapter_dir outputs/models/gemma4_peft_langqkvo_infermatch_exp300_v2_main/best \
   --router_dir "$ROUTER_DIR" \
   --risk_scorer_dir "$RISK_SCORER_DIR" \
   --input data/splits_exp300/test.jsonl \
-  --output outputs/refinement/gemma4_peft_langqkvo_infermatch_exp300_test_t4.jsonl \
+  --output outputs/refinement/gemma4_peft_langqkvo_infermatch_exp300_v2_test_t4.jsonl \
   --modes unsafe_t4 \
   --max_new_tokens 120 \
   --temperature 0.0 \

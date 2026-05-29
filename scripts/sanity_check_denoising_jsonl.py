@@ -35,6 +35,12 @@ def main():
         print("source:", dict(Counter(row.get("source", "<missing>") for row in rows)))
         print("t:", dict(Counter(row.get("t", "<missing>") for row in rows)))
         print("empty output count:", sum(1 for row in rows if not str(row.get("safe_response", "")).strip()))
+        print("empty unsafe_response count:", sum(1 for row in rows if not str(row.get("unsafe_response", "")).strip()))
+        print("empty z_t by source:", dict(Counter(
+            row.get("source", "<missing>")
+            for row in rows
+            if not str(row.get("z_t", "")).strip()
+        )))
         print("short response count:", sum(1 for row in rows if response_len(row) < args.short_words))
         print("first row keys:", sorted(rows[0].keys()) if rows else [])
 
