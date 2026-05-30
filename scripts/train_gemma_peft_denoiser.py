@@ -215,6 +215,12 @@ def main():
     ap.add_argument("--max_target_len", type=int, default=160)
     ap.add_argument("--eval_every", type=int, default=25)
     ap.add_argument("--save_every", type=int, default=100)
+    ap.add_argument(
+        "--lambda_y",
+        type=float,
+        default=1.5,
+        help="Risk-weight strength for target tokens. Use 0.0 for denoising SFT without risk-weighted CE.",
+    )
     args = ap.parse_args()
 
     out = Path(args.output_dir)
@@ -269,8 +275,8 @@ def main():
 
     device = next(model.parameters()).device
 
-    train = DenoiseDS(args.train_file, tok, args.max_source_len, args.max_target_len)
-    valid = DenoiseDS(args.valid_file, tok, args.max_source_len, args.max_target_len)
+    train = DenoiseDS(args.train_file, tok, args.max_source_len, args.max_target_len, lambda_y=args.lambda_y)
+    valid = DenoiseDS(args.valid_file, tok, args.max_source_len, args.max_target_len, lambda_y=args.lambda_y)
     coll = Collator(tok, args.max_source_len + args.max_target_len)
 
     tl = DataLoader(train, batch_size=args.batch_size, shuffle=True, collate_fn=coll, num_workers=2)

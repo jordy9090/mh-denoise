@@ -5,7 +5,7 @@ This ablation tests the optional multi-step inference path described in the meth
 The main inference path remains a single reverse step such as `unsafe_t2`, `unsafe_t3`, or `unsafe_t4`. The iterative ablation uses the same trained PEFT denoiser but applies it across a decreasing timestep schedule:
 
 ```text
-4 -> 3 -> 2 -> 0
+4 -> 3 -> 2
 ```
 
 At each step:
@@ -16,7 +16,7 @@ At each step:
 4. The denoiser generates a new response.
 5. The new response becomes the draft for the next step.
 
-The original unsafe response remains in the prompt for context, and router prediction `g` is computed once from the original question and unsafe response.
+The original unsafe response remains in the prompt for context, and router prediction `g` is computed once from the original question and unsafe response. We do not run a separate generation call at `t=0`; the final prediction after `t=2` is treated as the clean output.
 
 ## When To Use This
 
@@ -52,8 +52,8 @@ python scripts/run_gemma_peft_iterative_inference.py \
   --router_dir "$ROUTER_DIR" \
   --risk_scorer_dir "$RISK_SCORER_DIR" \
   --input data/splits_exp295/valid_mdlm.jsonl \
-  --output outputs/refinement/gemma4_peft_exp295_v2_bc_valid_iter_4_3_2_0_smoke.jsonl \
-  --iter_steps 4,3,2,0 \
+  --output outputs/refinement/gemma4_peft_exp295_v2_bc_valid_iter_4_3_2_smoke.jsonl \
+  --iter_steps 4,3,2 \
   --max_examples 5 \
   --max_new_tokens 120 \
   --temperature 0.0 \
@@ -70,8 +70,8 @@ python scripts/run_gemma_peft_iterative_inference.py \
   --router_dir "$ROUTER_DIR" \
   --risk_scorer_dir "$RISK_SCORER_DIR" \
   --input data/splits_exp295/valid_mdlm.jsonl \
-  --output outputs/refinement/gemma4_peft_exp295_v2_bc_valid_iter_4_3_2_0.jsonl \
-  --iter_steps 4,3,2,0 \
+  --output outputs/refinement/gemma4_peft_exp295_v2_bc_valid_iter_4_3_2.jsonl \
+  --iter_steps 4,3,2 \
   --max_new_tokens 120 \
   --temperature 0.0 \
   --repetition_penalty 1.15 \
@@ -87,8 +87,8 @@ python scripts/run_gemma_peft_iterative_inference.py \
   --router_dir "$ROUTER_DIR" \
   --risk_scorer_dir "$RISK_SCORER_DIR" \
   --input data/splits_exp295/test.jsonl \
-  --output outputs/refinement/gemma4_peft_exp295_v2_bc_test_iter_4_3_2_0.jsonl \
-  --iter_steps 4,3,2,0 \
+  --output outputs/refinement/gemma4_peft_exp295_v2_bc_test_iter_4_3_2.jsonl \
+  --iter_steps 4,3,2 \
   --max_new_tokens 120 \
   --temperature 0.0 \
   --repetition_penalty 1.15 \
@@ -99,8 +99,8 @@ Check:
 
 ```bash
 wc -l \
-  outputs/refinement/gemma4_peft_exp295_v2_bc_valid_iter_4_3_2_0.jsonl \
-  outputs/refinement/gemma4_peft_exp295_v2_bc_test_iter_4_3_2_0.jsonl
+  outputs/refinement/gemma4_peft_exp295_v2_bc_valid_iter_4_3_2.jsonl \
+  outputs/refinement/gemma4_peft_exp295_v2_bc_test_iter_4_3_2.jsonl
 ```
 
 Expected with the current exp295 split:
@@ -110,7 +110,7 @@ Expected with the current exp295 split:
 
 Each output row contains:
 
-- `mode`: `iter_4_3_2_0`
+- `mode`: `iter_4_3_2`
 - `peft_response`: final response after the last step
 - `iterative_steps`: per-step drafts, masks, raw generations, and cleaned generations
 - `g`, `z_t`, `span_risks`: final-step metadata
@@ -119,7 +119,7 @@ Each output row contains:
 
 ```bash
 python scripts/prepare_refinement_judge_input.py \
-  --input outputs/refinement/gemma4_peft_exp295_v2_bc_test_iter_4_3_2_0.jsonl \
+  --input outputs/refinement/gemma4_peft_exp295_v2_bc_test_iter_4_3_2.jsonl \
   --output outputs/eval_inputs/exp295_iterative_denoising_judge_input.jsonl \
   --response_field peft_response \
   --system_name iterative_denoising_refiner \

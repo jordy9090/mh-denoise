@@ -206,7 +206,7 @@ def main():
     ap.add_argument("--input", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--T", type=int, default=4)
-    ap.add_argument("--iter_steps", default="4,3,2,0")
+    ap.add_argument("--iter_steps", default="4,3,2")
     ap.add_argument("--mask_token", default="<MASK>")
     ap.add_argument("--max_source_len", type=int, default=512)
     ap.add_argument("--max_new_tokens", type=int, default=120)
