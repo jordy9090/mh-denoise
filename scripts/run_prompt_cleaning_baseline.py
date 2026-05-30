@@ -1,6 +1,7 @@
 import argparse
 import json
 import re
+import unicodedata
 from pathlib import Path
 
 import torch
@@ -15,18 +16,88 @@ def load_jsonl(path):
                 yield json.loads(line)
 
 
+RESPONSE_KEYS = [
+    "cleaned_response",
+    "cleaned_cleaned_response",
+    "cleaned_Response",
+    "response",
+    "safe_response",
+    "rewritten_response",
+    "final_response",
+]
+
+
+def normalize_text(text):
+    text = str(text or "")
+    replacements = {
+        "\u00a0": " ",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2026": "...",
+    }
+    for src, dst in replacements.items():
+        text = text.replace(src, dst)
+    text = unicodedata.normalize("NFKC", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def strip_jsonish_response(text):
+    cleaned = str(text or "").strip()
+    cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+    key_re = "|".join(re.escape(key) for key in RESPONSE_KEYS)
+    match = re.search(rf'["\']?(?:{key_re})["\']?\s*:\s*["\']', cleaned, flags=re.I | re.S)
+    if match:
+        cleaned = cleaned[match.end():]
+    cleaned = re.sub(r'["\']\s*,?\s*["\']?[^"\']*$', "", cleaned).strip()
+    cleaned = re.sub(r'["\']\s*\}\s*$', "", cleaned).strip()
+    cleaned = re.sub(r"^\s*\{\s*", "", cleaned).strip()
+    cleaned = re.sub(r"\s*\}\s*$", "", cleaned).strip()
+    cleaned = cleaned.replace("\\n", " ")
+    cleaned = cleaned.replace('\\"', '"')
+    cleaned = cleaned.replace("\\", " ")
+    return normalize_text(cleaned)
+
+
 def extract_json(text):
-    text = text.strip()
-    match = re.search(r"\{.*\}", text, re.DOTALL)
+    raw_text = str(text or "").strip()
+    match = re.search(r"\{.*\}", raw_text, re.DOTALL)
     if not match:
-        return {"cleaned_response": text, "parse_error": True}
+        return {
+            "cleaned_response": normalize_text(raw_text),
+            "parse_error": True,
+            "raw_output": raw_text,
+            "parsed_key": "",
+        }
 
     try:
         obj = json.loads(match.group(0))
-        obj["parse_error"] = False
-        return obj
+        for key in RESPONSE_KEYS:
+            value = obj.get(key)
+            if value is not None and str(value).strip():
+                return {
+                    "cleaned_response": normalize_text(value),
+                    "parse_error": key != "cleaned_response",
+                    "raw_output": raw_text,
+                    "parsed_key": key,
+                }
+        return {
+            "cleaned_response": strip_jsonish_response(match.group(0)),
+            "parse_error": True,
+            "raw_output": raw_text,
+            "parsed_key": "",
+        }
     except json.JSONDecodeError:
-        return {"cleaned_response": text, "parse_error": True}
+        return {
+            "cleaned_response": strip_jsonish_response(raw_text),
+            "parse_error": True,
+            "raw_output": raw_text,
+            "parsed_key": "",
+        }
 
 
 def build_prompt(ex, use_dimension=False):
@@ -130,6 +201,8 @@ def main():
                 **ex,
                 "cleaned_response": result.get("cleaned_response", ""),
                 "prompt_cleaning_parse_error": result.get("parse_error", False),
+                "prompt_cleaning_raw_output": result.get("raw_output", ""),
+                "prompt_cleaning_parsed_key": result.get("parsed_key", ""),
                 "baseline": "prompt_cleaning",
                 "used_dimension": args.use_dimension,
                 "decoding": {

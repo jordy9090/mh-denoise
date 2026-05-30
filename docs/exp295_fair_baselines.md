@@ -46,6 +46,63 @@ wc -l data/splits_exp295/test.jsonl outputs/refinement/prompt_rewrite_gemma4_exp
 
 Expected: `354` output rows for the current exp295 split.
 
+Sanity check the generated responses:
+
+```bash
+python - <<'PY'
+import json
+path = "outputs/refinement/prompt_rewrite_gemma4_exp295_test.jsonl"
+rows = [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
+print("rows:", len(rows))
+print("empty cleaned_response:", sum(1 for r in rows if not str(r.get("cleaned_response", "")).strip()))
+print("parse errors:", sum(1 for r in rows if r.get("prompt_cleaning_parse_error")))
+PY
+```
+
+If any rows have an empty `cleaned_response`, do not judge the raw file. Repair the existing file and create an empty-only subset:
+
+```bash
+python scripts/repair_prompt_rewrite_outputs.py \
+  --input outputs/refinement/prompt_rewrite_gemma4_exp295_test.jsonl \
+  --output outputs/refinement/prompt_rewrite_gemma4_exp295_test_clean.jsonl \
+  --empty_output outputs/refinement/prompt_rewrite_empty_input.jsonl
+```
+
+Regenerate only the empty subset with the robust parser:
+
+```bash
+nohup python -u scripts/run_prompt_cleaning_baseline.py \
+  --input outputs/refinement/prompt_rewrite_empty_input.jsonl \
+  --output outputs/refinement/prompt_rewrite_empty_regen.jsonl \
+  --model google/gemma-4-E4B-it \
+  --max_source_len 512 \
+  --max_new_tokens 120 \
+  --temperature 0.0 \
+  --repetition_penalty 1.15 \
+  --no_repeat_ngram_size 4 \
+  > outputs/logs/prompt_rewrite_empty_regen.log 2>&1 &
+```
+
+Merge the regenerated rows back:
+
+```bash
+python scripts/repair_prompt_rewrite_outputs.py \
+  --input outputs/refinement/prompt_rewrite_gemma4_exp295_test_clean.jsonl \
+  --merge_regen outputs/refinement/prompt_rewrite_empty_regen.jsonl \
+  --output outputs/refinement/prompt_rewrite_gemma4_exp295_test_clean_rescued.jsonl
+
+python - <<'PY'
+import json
+path = "outputs/refinement/prompt_rewrite_gemma4_exp295_test_clean_rescued.jsonl"
+rows = [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
+print("rows:", len(rows))
+print("empty cleaned_response:", sum(1 for r in rows if not str(r.get("cleaned_response", "")).strip()))
+print("rescued:", sum(1 for r in rows if r.get("prompt_cleaning_rescued")))
+PY
+```
+
+Use the rescued file for judge input if rescue was needed.
+
 ## 2. Fair SFT Refiner Training
 
 This baseline intentionally uses `--prompt_style sft_plain`.
@@ -128,6 +185,19 @@ Prompt Rewrite:
 ```bash
 python scripts/prepare_refinement_judge_input.py \
   --input outputs/refinement/prompt_rewrite_gemma4_exp295_test.jsonl \
+  --output outputs/eval_inputs/exp295_prompt_rewrite_judge_input.jsonl \
+  --response_field cleaned_response \
+  --system_name prompt_rewrite \
+  --id_prefix exp295_test \
+  --include_unsafe_baseline \
+  --include_safe_reference
+```
+
+If empty rows were rescued, use this input instead:
+
+```bash
+python scripts/prepare_refinement_judge_input.py \
+  --input outputs/refinement/prompt_rewrite_gemma4_exp295_test_clean_rescued.jsonl \
   --output outputs/eval_inputs/exp295_prompt_rewrite_judge_input.jsonl \
   --response_field cleaned_response \
   --system_name prompt_rewrite \
