@@ -11,6 +11,13 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification, get_
 
 DIMS = ["overall_quality", "empathy", "specificity", "medical_advice", "factual_consistency", "toxicity"]
 DIM2ID = {d:i for i,d in enumerate(DIMS)}
+DIM_ALIASES = {
+    "medical": "medical_advice",
+    "medical_boundary": "medical_advice",
+    "factual": "factual_consistency",
+    "fact": "factual_consistency",
+    "overall": "overall_quality",
+}
 
 
 def read_jsonl(path):
@@ -31,6 +38,7 @@ def get_field(ex,*names,default=""):
 
 def norm_dim(x):
     x=str(x).strip().lower().replace("-","_").replace(" ","_")
+    x=DIM_ALIASES.get(x,x)
     return x if x in DIM2ID else "overall_quality"
 
 
@@ -39,7 +47,7 @@ def label_vec(ex):
     if "target_dimensions" in ex and isinstance(ex["target_dimensions"], list):
         dims=[norm_dim(x) for x in ex["target_dimensions"]]
     else:
-        dims=[norm_dim(get_field(ex,"target_dimension","dimension","violated_dimension"))]
+        dims=[norm_dim(get_field(ex,"target_dimension","dimension","violated_dimension","used_dimension","condition_dim"))]
     for d in dims:
         y[DIM2ID[d]]=1.0
     return y
@@ -90,6 +98,9 @@ def evaluate(model,loader,device):
     model.eval()
     loss_fn=nn.BCEWithLogitsLoss()
     losses=[]; exact=0; top1=0; total=0
+    tp=torch.zeros(len(DIMS),device=device)
+    fp=torch.zeros(len(DIMS),device=device)
+    fn=torch.zeros(len(DIMS),device=device)
     for batch in loader:
         labels=batch.pop("labels").to(device)
         batch={k:v.to(device) for k,v in batch.items()}
@@ -99,10 +110,31 @@ def evaluate(model,loader,device):
         probs=torch.sigmoid(logits)
         pred=(probs>=0.5).float()
         exact += int((pred==labels).all(dim=1).sum().item())
-        top1 += int((probs.argmax(dim=1)==labels.argmax(dim=1)).sum().item())
+        top_idx=probs.argmax(dim=1)
+        top1 += int(labels.gather(1,top_idx.unsqueeze(1)).squeeze(1).gt(0.5).sum().item())
+        tp += ((pred==1) & (labels==1)).sum(dim=0)
+        fp += ((pred==1) & (labels==0)).sum(dim=0)
+        fn += ((pred==0) & (labels==1)).sum(dim=0)
         total += labels.size(0)
     model.train()
-    return sum(losses)/max(1,len(losses)), exact/max(1,total), top1/max(1,total)
+    precision=tp/(tp+fp+1e-8)
+    recall=tp/(tp+fn+1e-8)
+    f1=2*precision*recall/(precision+recall+1e-8)
+    per_dim={
+        DIMS[i]: {
+            "precision": float(precision[i].detach().cpu().item()),
+            "recall": float(recall[i].detach().cpu().item()),
+            "f1": float(f1[i].detach().cpu().item()),
+        }
+        for i in range(len(DIMS))
+    }
+    return {
+        "loss": sum(losses)/max(1,len(losses)),
+        "exact_match": exact/max(1,total),
+        "top1_accuracy": top1/max(1,total),
+        "macro_f1": float(f1.mean().detach().cpu().item()),
+        "per_dimension": per_dim,
+    }
 
 
 def save(model,tok,out):
@@ -111,6 +143,25 @@ def save(model,tok,out):
     tok.save_pretrained(out)
     with open(out/"dims.json","w",encoding="utf-8") as f:
         json.dump(DIMS,f,indent=2)
+
+
+def write_metrics(path,metrics,extra=None):
+    payload=dict(metrics)
+    if extra:
+        payload.update(extra)
+    with open(path,"w",encoding="utf-8") as f:
+        json.dump(payload,f,indent=2)
+
+
+def format_eval(metrics):
+    parts=[
+        f"loss={metrics['loss']:.4f}",
+        f"exact={metrics['exact_match']:.4f}",
+        f"top1={metrics['top1_accuracy']:.4f}",
+        f"macro_f1={metrics['macro_f1']:.4f}",
+    ]
+    dim_f1=" ".join(f"{d}={metrics['per_dimension'][d]['f1']:.4f}" for d in DIMS)
+    return " ".join(parts)+" per_dim_f1=["+dim_f1+"]"
 
 
 def main():
@@ -165,11 +216,16 @@ def main():
             step+=1
             pbar.set_postfix({"loss":round(float(loss.item()),4),"step":step})
             if step%args.eval_every==0:
-                ev,exact,top1=evaluate(model,vl,device)
-                print(f"[eval] step={step} loss={ev:.4f} exact={exact:.4f} top1={top1:.4f}")
-                if ev<best:
-                    best=ev; save(model,tok,out/"best"); print("[save] best ->",out/"best")
+                metrics=evaluate(model,vl,device)
+                print(f"[eval] step={step} {format_eval(metrics)}")
+                if metrics["loss"]<best:
+                    best=metrics["loss"]; save(model,tok,out/"best")
+                    write_metrics(out/"best"/"eval_metrics.json",metrics,{"step":step,"epoch":ep+1})
+                    print("[save] best ->",out/"best")
     save(model,tok,out/"final")
+    final_metrics=evaluate(model,vl,device)
+    write_metrics(out/"final"/"eval_metrics.json",final_metrics,{"step":step,"epoch":args.epochs})
+    print("[eval final]",format_eval(final_metrics))
     print("[done] best:",best)
     print("[done] final ->",out/"final")
 

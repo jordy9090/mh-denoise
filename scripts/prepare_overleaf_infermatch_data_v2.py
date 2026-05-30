@@ -1,7 +1,7 @@
 import argparse
 import json
 import random
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 from prepare_overleaf_infermatch_data import (
@@ -19,6 +19,14 @@ from prepare_overleaf_infermatch_data import (
 
 
 DATA_VERSION = "infermatch_full_mixture_v2"
+DIM2ID = {d: i for i, d in enumerate(DIMS)}
+DIM_ALIASES = {
+    "medical": "medical_advice",
+    "medical_boundary": "medical_advice",
+    "factual": "factual_consistency",
+    "fact": "factual_consistency",
+    "overall": "overall_quality",
+}
 
 
 def parse_timesteps(value):
@@ -37,6 +45,53 @@ def clamp01(value):
 def preview(text, n=140):
     text = " ".join(str(text or "").split())
     return text if len(text) <= n else text[: n - 3] + "..."
+
+
+def normalize_dim(x):
+    x = str(x or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return DIM_ALIASES.get(x, x)
+
+
+def gold_dimension_values(ex):
+    if "target_dimensions" in ex and isinstance(ex["target_dimensions"], list):
+        return ex["target_dimensions"]
+    for field in ["target_dimension", "dimension", "violated_dimension", "used_dimension", "condition_dim"]:
+        if field in ex and ex[field] is not None and str(ex[field]).strip():
+            return [ex[field]]
+    return []
+
+
+def display_target_dimension(ex):
+    if "target_dimensions" in ex and isinstance(ex["target_dimensions"], list):
+        return ex["target_dimensions"]
+    values = gold_dimension_values(ex)
+    return values[0] if values else ""
+
+
+def make_gold_aspect_vector(ex, warning_counter=None):
+    vec = [0.0] * len(DIMS)
+    raw_dims = gold_dimension_values(ex)
+
+    if not raw_dims:
+        vec[DIM2ID["overall_quality"]] = 1.0
+        if warning_counter is not None:
+            warning_counter["missing"] += 1
+        return vec
+
+    for raw_dim in raw_dims:
+        dim = normalize_dim(raw_dim)
+        if dim in DIM2ID:
+            vec[DIM2ID[dim]] = 1.0
+        else:
+            vec[DIM2ID["overall_quality"]] = 1.0
+            if warning_counter is not None:
+                warning_counter["unknown"] += 1
+
+    if not any(vec):
+        vec[DIM2ID["overall_quality"]] = 1.0
+        if warning_counter is not None:
+            warning_counter["missing"] += 1
+    return vec
 
 
 def base_weight_record(pair, risk, state, p_mask=0.0):
@@ -192,7 +247,11 @@ def make_row(row, source, t, T, z_t, states, weighted):
         "question": row["question"],
         "unsafe_response": row["unsafe_response"],
         "safe_response": row["safe_response"],
+        "target_dimension": row.get("target_dimension", ""),
         "g": row["g"],
+        "g_pred": row["g_pred"],
+        "g_gold": row["g_gold"],
+        "g_source": row["g_source"],
         "source": source,
         "t": t,
         "T": T,
@@ -204,25 +263,19 @@ def make_row(row, source, t, T, z_t, states, weighted):
     }
 
 
-def print_samples(rows, per_source=3):
-    by_source = defaultdict(list)
-    for row in rows:
-        if len(by_source[row["source"]]) < per_source:
-            by_source[row["source"]].append(row)
-
-    for source in sorted(by_source):
-        print(f"\n[samples source={source}]")
-        for row in by_source[source]:
-            print(json.dumps({
-                "question": preview(row.get("question")),
-                "unsafe_response": preview(row.get("unsafe_response")),
-                "safe_response": preview(row.get("safe_response")),
-                "source": row.get("source"),
-                "t": row.get("t"),
-                "z_t": preview(row.get("z_t")),
-                "target_weight_spans": row.get("target_weight_spans", [])[:2],
-                "alignments": row.get("alignments", [])[:2],
-            }, ensure_ascii=False))
+def print_samples(rows, limit=3):
+    print("\n[samples first_3]")
+    for row in rows[:limit]:
+        print(json.dumps({
+            "target_dimension": row.get("target_dimension"),
+            "g_gold": row.get("g_gold"),
+            "g_pred": row.get("g_pred"),
+            "g": row.get("g"),
+            "g_source": row.get("g_source"),
+            "source": row.get("source"),
+            "t": row.get("t"),
+            "z_t": preview(row.get("z_t")),
+        }, ensure_ascii=False))
 
 
 def main():
@@ -242,8 +295,11 @@ def main():
     ap.add_argument("--unsafe_timesteps", default="2,2,3,4")
     ap.add_argument("--safe_timesteps", default="2")
     ap.add_argument("--bridge_timesteps", default="2")
+    ap.add_argument("--use_gold_aspect_mixing", action="store_true")
+    ap.add_argument("--aspect_tf_prob", type=float, default=0.0)
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
+    args.aspect_tf_prob = clamp01(args.aspect_tf_prob)
 
     rng = random.Random(args.seed)
 
@@ -251,15 +307,28 @@ def main():
     hats = predict_router(base, args.router_dir)
 
     staged = []
-    for ex, g in zip(base, hats):
+    gold_warnings = Counter()
+    for ex, g_pred in zip(base, hats):
         q = get_field(ex, "question", "query", "user_question")
         u = get_field(ex, "unsafe_response", "corrupted_response", "bad_response")
         y = get_field(ex, "safe_response", "target_response", "response")
+        g_pred = [float(x) for x in g_pred]
+        g_gold = make_gold_aspect_vector(ex, gold_warnings)
+        if args.use_gold_aspect_mixing and rng.random() < args.aspect_tf_prob:
+            g = g_gold
+            g_source = "gold"
+        else:
+            g = g_pred
+            g_source = "pred"
         staged.append({
             "question": q,
             "unsafe_response": u,
             "safe_response": y,
+            "target_dimension": display_target_dimension(ex),
             "g": g,
+            "g_pred": g_pred,
+            "g_gold": g_gold,
+            "g_source": g_source,
             "alignments": monotonic_align(u, y),
         })
 
@@ -321,15 +390,24 @@ def main():
     print("wrote", len(out), args.output)
     print("source:", Counter(r["source"] for r in out))
     print("t:", Counter(r["t"] for r in out))
+    print("g_source:", Counter(r["g_source"] for r in out))
+    print("gold_dimension_warnings:", gold_warnings)
     print_samples(out)
 
+    g_source_distribution = Counter(r["g_source"] for r in out)
     manifest = vars(args) | {
         "n_input": len(base),
         "n_output": len(out),
         "dims": DIMS,
         "data_version": DATA_VERSION,
+        "use_gold_aspect_mixing": args.use_gold_aspect_mixing,
+        "aspect_tf_prob": args.aspect_tf_prob,
         "source_distribution": dict(Counter(r["source"] for r in out)),
         "timestep_distribution": dict(Counter(str(r["t"]) for r in out)),
+        "g_source_distribution": dict(g_source_distribution),
+        "unknown_gold_dimension_count": int(gold_warnings["unknown"]),
+        "missing_gold_dimension_count": int(gold_warnings["missing"]),
+        "gold_dimension_warning_distribution": dict(gold_warnings),
     }
     with open(str(Path(args.output).with_suffix(".manifest.json")), "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2, ensure_ascii=False)
