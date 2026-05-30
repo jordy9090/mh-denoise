@@ -155,6 +155,13 @@ def freeze_model_parameters(model):
         p.requires_grad_(False)
 
 
+def set_shared_lora_trainable(model, trainable):
+    for module in model.modules():
+        if isinstance(module, AspectMoELinear):
+            module.A_shared.requires_grad_(trainable)
+            module.B_shared.requires_grad_(trainable)
+
+
 def wrap_aspect_moe_layers(model, config):
     target_regex = config["target_regex"]
     pattern = re.compile(target_regex)
@@ -196,6 +203,139 @@ def set_moe_gates(model, g):
             n += 1
     if n == 0:
         raise RuntimeError("No AspectMoELinear modules found. Did you call wrap_aspect_moe_layers?")
+
+
+def _load_adapter_tensor_file(path):
+    if path.suffix == ".safetensors":
+        try:
+            from safetensors.torch import load_file
+        except ImportError as exc:
+            raise ImportError("Install safetensors to load adapter_model.safetensors") from exc
+        return load_file(str(path))
+    return torch.load(path, map_location="cpu")
+
+
+def load_peft_adapter_state(adapter_dir):
+    adapter_dir = Path(adapter_dir)
+    candidates = [
+        adapter_dir / "adapter_model.safetensors",
+        adapter_dir / "adapter_model.bin",
+        adapter_dir / "pytorch_model.bin",
+    ]
+    for path in candidates:
+        if path.exists():
+            return _load_adapter_tensor_file(path), path
+    raise FileNotFoundError(f"No PEFT adapter tensor file found under {adapter_dir}")
+
+
+def peft_lora_scale(adapter_dir):
+    config_path = Path(adapter_dir) / "adapter_config.json"
+    if not config_path.exists():
+        return None
+    with open(config_path, encoding="utf-8") as f:
+        config = json.load(f)
+    r = config.get("r")
+    alpha = config.get("lora_alpha")
+    if r is None or alpha is None or float(r) == 0:
+        return None
+    return float(alpha) / float(r)
+
+
+def _peft_lora_module_name(key, which):
+    suffixes = [
+        f".lora_{which}.default.weight",
+        f".lora_{which}.weight",
+    ]
+    for suffix in suffixes:
+        if key.endswith(suffix):
+            return key[: -len(suffix)]
+    return None
+
+
+def _match_wrapped_module(peft_name, wrapped_names):
+    matches = [name for name in wrapped_names if peft_name.endswith(name)]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        return max(matches, key=len)
+    return None
+
+
+def initialize_shared_lora_from_peft(model, adapter_dir, require_all=True, preserve_scale=True):
+    state, state_path = load_peft_adapter_state(adapter_dir)
+    wrapped = {
+        name: module
+        for name, module in model.named_modules()
+        if isinstance(module, AspectMoELinear)
+    }
+    if not wrapped:
+        raise RuntimeError("No AspectMoELinear modules found before PEFT shared initialization")
+
+    lora_a = {}
+    lora_b = {}
+    for key, value in state.items():
+        name_a = _peft_lora_module_name(key, "A")
+        if name_a is not None:
+            matched = _match_wrapped_module(name_a, wrapped.keys())
+            if matched is not None:
+                lora_a[matched] = value
+            continue
+
+        name_b = _peft_lora_module_name(key, "B")
+        if name_b is not None:
+            matched = _match_wrapped_module(name_b, wrapped.keys())
+            if matched is not None:
+                lora_b[matched] = value
+
+    peft_scale = peft_lora_scale(adapter_dir)
+    loaded = []
+    skipped = []
+    for name, module in wrapped.items():
+        if name not in lora_a or name not in lora_b:
+            skipped.append((name, "missing_A_or_B"))
+            continue
+
+        a = lora_a[name]
+        b = lora_b[name]
+        if tuple(a.shape) != tuple(module.A_shared.shape):
+            skipped.append((name, f"A_shape:{tuple(a.shape)}!={tuple(module.A_shared.shape)}"))
+            continue
+        if tuple(b.shape) != tuple(module.B_shared.shape):
+            skipped.append((name, f"B_shape:{tuple(b.shape)}!={tuple(module.B_shared.shape)}"))
+            continue
+
+        b_to_copy = b
+        if preserve_scale and peft_scale is not None and module.shared_scale != 0:
+            b_to_copy = b * (float(peft_scale) / float(module.shared_scale))
+
+        with torch.no_grad():
+            module.A_shared.copy_(a.to(device=module.A_shared.device, dtype=module.A_shared.dtype))
+            module.B_shared.copy_(b_to_copy.to(device=module.B_shared.device, dtype=module.B_shared.dtype))
+        loaded.append(name)
+
+    if require_all and skipped:
+        examples = "; ".join(f"{name}:{reason}" for name, reason in skipped[:10])
+        raise RuntimeError(
+            f"PEFT shared initialization loaded {len(loaded)}/{len(wrapped)} wrapped modules; "
+            f"skipped examples: {examples}"
+        )
+
+    report = {
+        "adapter_dir": str(adapter_dir),
+        "state_path": str(state_path),
+        "loaded_count": len(loaded),
+        "wrapped_count": len(wrapped),
+        "skipped_count": len(skipped),
+        "skipped_examples": skipped[:20],
+        "peft_scale": peft_scale,
+        "preserve_scale": preserve_scale,
+    }
+    print("[init shared] PEFT adapter:", adapter_dir)
+    print("[init shared] tensor file:", state_path)
+    print("[init shared] loaded:", f"{len(loaded)}/{len(wrapped)}")
+    if skipped:
+        print("[init shared] skipped examples:", skipped[:5])
+    return report
 
 
 def moe_adapter_state_dict(model):

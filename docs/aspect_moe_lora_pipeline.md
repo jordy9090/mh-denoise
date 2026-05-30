@@ -66,6 +66,55 @@ The saved directory should contain:
 
 It should not contain a full base-model checkpoint.
 
+## Shared-Initialized MoE Train
+
+This is the safer method-D variant. It initializes `Delta W_sh` from an already trained PEFT refiner and trains only small aspect expert residuals if `--freeze_shared_lora` is set.
+
+At step 0, this model is effectively:
+
+```text
+base Gemma + existing BC/SFT shared LoRA + zero expert residuals
+```
+
+During training, the six expert LoRA branches learn aspect-specific corrections on top of that shared refiner. The script evaluates and saves this initialized step-0 state as `best` before training, so `best` cannot be worse than the initialized shared adapter unless later validation checkpoints improve and replace it.
+
+```bash
+SHARED_INIT=outputs/models/gemma4_peft_langqkvo_infermatch_exp295_v2_bc/best
+OUT=outputs/models/gemma4_aspect_moe_exp295_v2_bc_initshared
+LOG=outputs/logs/train_gemma4_aspect_moe_exp295_v2_bc_initshared.log
+
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+nohup python -u scripts/train_gemma_aspect_moe_denoiser.py \
+  --train_file data/overleaf_infermatch_exp295_v2_bc/train.jsonl \
+  --valid_file data/overleaf_infermatch_exp295_v2_bc/valid.jsonl \
+  --output_dir "$OUT" \
+  --model google/gemma-4-E4B-it \
+  --batch_size 1 \
+  --grad_accum 16 \
+  --epochs 1 \
+  --lr 1e-5 \
+  --r_shared 8 \
+  --r_expert 2 \
+  --alpha_shared 16 \
+  --alpha_expert 4 \
+  --dropout 0.1 \
+  --init_shared_adapter_dir "$SHARED_INIT" \
+  --freeze_shared_lora \
+  --max_train_steps 180 \
+  --eval_every 10 \
+  --save_every 50 \
+  --target_regex '.*language_model\.layers\.[0-9]+\.self_attn\.(q_proj|k_proj|v_proj|o_proj)$' \
+  --max_source_len 512 \
+  --max_target_len 160 \
+  > "$LOG" 2>&1 &
+```
+
+Notes:
+
+- Omit `--freeze_shared_lora` if you want the initialized shared adapter to keep training, but freezing it is the safer first salvage run.
+- The PEFT adapter rank must match `--r_shared`; the current BC q/k/v/o adapter used `r=8, alpha=16`.
+- The loader preserves the PEFT LoRA scale when copying into the custom shared branch.
+
 ## Smoke Inference
 
 ```bash

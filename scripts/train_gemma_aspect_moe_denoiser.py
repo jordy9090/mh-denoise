@@ -17,8 +17,10 @@ from aspect_moe_lora import (
     DIMS,
     count_trainable_parameters,
     freeze_model_parameters,
+    initialize_shared_lora_from_peft,
     normalize_gates,
     save_moe_adapter,
+    set_shared_lora_trainable,
     set_moe_gates,
     wrap_aspect_moe_layers,
 )
@@ -255,7 +257,7 @@ def load_base_model(model_name, use_4bit):
     return AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
 
 
-def build_moe_config(args, wrapped_names=None):
+def build_moe_config(args, wrapped_names=None, init_report=None):
     return {
         "dims": DIMS,
         "base_model": args.model,
@@ -267,6 +269,9 @@ def build_moe_config(args, wrapped_names=None):
         "dropout": args.dropout,
         "moe_eps": args.moe_eps,
         "wrapped_module_names": wrapped_names or [],
+        "init_shared_adapter_dir": args.init_shared_adapter_dir,
+        "freeze_shared_lora": args.freeze_shared_lora,
+        "init_shared_report": init_report,
     }
 
 
@@ -295,6 +300,11 @@ def main():
     ap.add_argument("--save_every", type=int, default=100)
     ap.add_argument("--max_train_steps", type=int, default=None)
     ap.add_argument("--moe_eps", type=float, default=1e-4)
+    ap.add_argument("--init_shared_adapter_dir", default="")
+    ap.add_argument("--allow_partial_shared_init", action="store_true")
+    ap.add_argument("--no_preserve_init_scale", action="store_true")
+    ap.add_argument("--freeze_shared_lora", action="store_true")
+    ap.add_argument("--no_initial_eval", action="store_true")
     ap.add_argument("--no_4bit", action="store_true")
     ap.add_argument("--num_workers", type=int, default=2)
     args = ap.parse_args()
@@ -317,7 +327,20 @@ def main():
     freeze_model_parameters(model)
     config = build_moe_config(args)
     wrapped_names = wrap_aspect_moe_layers(model, config)
-    config = build_moe_config(args, wrapped_names)
+    init_report = None
+    if args.init_shared_adapter_dir:
+        init_report = initialize_shared_lora_from_peft(
+            model,
+            args.init_shared_adapter_dir,
+            require_all=not args.allow_partial_shared_init,
+            preserve_scale=not args.no_preserve_init_scale,
+        )
+    if args.freeze_shared_lora:
+        set_shared_lora_trainable(model, False)
+        print("shared LoRA trainable: False")
+    else:
+        print("shared LoRA trainable: True")
+    config = build_moe_config(args, wrapped_names, init_report)
     print("wrapped modules:", len(wrapped_names))
     print("first wrapped modules:", wrapped_names[:10])
 
@@ -362,6 +385,12 @@ def main():
     stop = False
     model.train()
     opt.zero_grad(set_to_none=True)
+
+    if args.init_shared_adapter_dir and not args.no_initial_eval:
+        ev = evaluate(model, vl, device)
+        best = ev
+        print(f"[eval] step=0 initialized_shared_loss={ev:.4f}")
+        save_moe_adapter(model, tok, out / "best", config)
 
     for ep in range(args.epochs):
         pbar = tqdm(tl, desc=f"epoch {ep+1}/{args.epochs}")
