@@ -62,7 +62,7 @@ Return JSON only:
 """.strip()
 
 
-def generate(model, tokenizer, prompt):
+def generate(model, tokenizer, prompt, args):
     messages = [{"role": "user", "content": prompt}]
     inputs = tokenizer.apply_chat_template(
         messages,
@@ -70,15 +70,24 @@ def generate(model, tokenizer, prompt):
         tokenize=True,
         return_dict=True,
         return_tensors="pt",
+        truncation=True,
+        max_length=args.max_source_len,
     ).to(model.device)
 
+    gen_kwargs = dict(
+        **inputs,
+        max_new_tokens=args.max_new_tokens,
+        repetition_penalty=args.repetition_penalty,
+        no_repeat_ngram_size=args.no_repeat_ngram_size,
+        pad_token_id=tokenizer.eos_token_id,
+    )
+    if args.temperature and args.temperature > 0:
+        gen_kwargs.update(dict(do_sample=True, temperature=args.temperature, top_p=args.top_p))
+    else:
+        gen_kwargs.update(dict(do_sample=False))
+
     with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=450,
-            do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
-        )
+        outputs = model.generate(**gen_kwargs)
 
     generated = outputs[0][inputs["input_ids"].shape[-1]:]
     text = tokenizer.decode(generated, skip_special_tokens=True)
@@ -91,6 +100,12 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--model", default="google/gemma-4-E4B-it")
     parser.add_argument("--use_dimension", action="store_true")
+    parser.add_argument("--max_source_len", type=int, default=512)
+    parser.add_argument("--max_new_tokens", type=int, default=120)
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--top_p", type=float, default=0.9)
+    parser.add_argument("--repetition_penalty", type=float, default=1.15)
+    parser.add_argument("--no_repeat_ngram_size", type=int, default=4)
     args = parser.parse_args()
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
@@ -109,7 +124,7 @@ def main():
     with open(args.output, "w", encoding="utf-8") as out:
         for ex in tqdm(rows):
             prompt = build_prompt(ex, use_dimension=args.use_dimension)
-            result = generate(model, tokenizer, prompt)
+            result = generate(model, tokenizer, prompt, args)
 
             record = {
                 **ex,
@@ -117,6 +132,14 @@ def main():
                 "prompt_cleaning_parse_error": result.get("parse_error", False),
                 "baseline": "prompt_cleaning",
                 "used_dimension": args.use_dimension,
+                "decoding": {
+                    "max_source_len": args.max_source_len,
+                    "max_new_tokens": args.max_new_tokens,
+                    "temperature": args.temperature,
+                    "top_p": args.top_p,
+                    "repetition_penalty": args.repetition_penalty,
+                    "no_repeat_ngram_size": args.no_repeat_ngram_size,
+                },
             }
             out.write(json.dumps(record, ensure_ascii=False) + "\n")
 

@@ -101,6 +101,12 @@ def main():
     ap.add_argument("--lora_r", type=int, default=8)
     ap.add_argument("--lora_alpha", type=int, default=16)
     ap.add_argument("--lora_dropout", type=float, default=0.05)
+    ap.add_argument(
+        "--prompt_style",
+        choices=["professor", "sft_plain"],
+        default="professor",
+        help="professor keeps aspect/draft fields; sft_plain uses only question + unsafe_response for a fair SFT baseline.",
+    )
     args = ap.parse_args()
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -146,12 +152,14 @@ def main():
         tokenizer,
         args.max_source_len,
         args.max_target_len,
+        prompt_style=args.prompt_style,
     )
     valid_ds = base.ProfessorRefinerDataset(
         args.valid_file,
         tokenizer,
         args.max_source_len,
         args.max_target_len,
+        prompt_style=args.prompt_style,
     )
     collator = base.CausalCollator(tokenizer, args.max_source_len + args.max_target_len)
 

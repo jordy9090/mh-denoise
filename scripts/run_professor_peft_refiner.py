@@ -79,7 +79,29 @@ def format_aspect_signal(ex: Dict) -> str:
     return "unspecified"
 
 
-def build_user_content(ex: Dict) -> str:
+def build_plain_sft_user_content(ex: Dict) -> str:
+    q = clean_text(get_field(ex, "question", "query", "user_question"))
+    u = clean_text(get_field(ex, "unsafe_response", "corrupted_response", "bad_response"))
+    return (
+        "Rewrite the unsafe counseling response into a safe final response.\n"
+        "Use only the user question and the unsafe response. "
+        "Do not use hidden gold labels, target dimensions, router scores, or corrupted drafts.\n"
+        "Return only the final response. Do not include section labels, analysis, or metadata.\n\n"
+        f"Question:\n{q}\n\n"
+        f"Unsafe response:\n{u}\n\n"
+        "Safety requirements:\n"
+        "- Validate the user's feelings without blaming or shaming them.\n"
+        "- Do not diagnose the user or state that they have a disorder.\n"
+        "- Do not give direct medication or treatment instructions.\n"
+        "- Give concrete, bounded next steps when appropriate.\n"
+        "- Encourage professional or trusted support for serious or persistent distress."
+    )
+
+
+def build_user_content(ex: Dict, prompt_style: str = "professor") -> str:
+    if prompt_style == "sft_plain":
+        return build_plain_sft_user_content(ex)
+
     q = clean_text(get_field(ex, "question", "query", "user_question"))
     u = clean_text(get_field(ex, "unsafe_response", "corrupted_response", "bad_response"))
     z = sanitize_draft(get_field(ex, "z_t", "draft", "masked_unsafe_draft", default=""))
@@ -105,18 +127,18 @@ def build_user_content(ex: Dict) -> str:
     )
 
 
-def build_prompt(tokenizer, ex: Dict) -> str:
+def build_prompt(tokenizer, ex: Dict, prompt_style: str = "professor") -> str:
     system = (
         "You are a careful mental-health response refiner. "
         "Your job is to transform unsafe or low-quality counseling answers into safe, empathetic, specific, professionally bounded answers."
     )
     messages = [
         {"role": "system", "content": system},
-        {"role": "user", "content": build_user_content(ex)},
+        {"role": "user", "content": build_user_content(ex, prompt_style=prompt_style)},
     ]
     if getattr(tokenizer, "chat_template", None):
         return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    return f"System: {system}\n\nUser: {build_user_content(ex)}\n\nAssistant:"
+    return f"System: {system}\n\nUser: {build_user_content(ex, prompt_style=prompt_style)}\n\nAssistant:"
 
 
 def cleanup(text: str) -> str:
@@ -164,7 +186,7 @@ def output_score(text: str) -> float:
 
 @torch.no_grad()
 def generate_candidate(model, tokenizer, ex: Dict, args):
-    prompt = build_prompt(tokenizer, ex)
+    prompt = build_prompt(tokenizer, ex, prompt_style=args.prompt_style)
     enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=args.max_source_len).to(model.device)
     gen = model.generate(
         **enc,
@@ -197,6 +219,12 @@ def main():
     ap.add_argument("--candidates", type=int, default=1)
     ap.add_argument("--repetition_penalty", type=float, default=1.08)
     ap.add_argument("--no_repeat_ngram_size", type=int, default=4)
+    ap.add_argument(
+        "--prompt_style",
+        choices=["professor", "sft_plain"],
+        default="professor",
+        help="professor keeps aspect/draft fields; sft_plain uses only question + unsafe_response for a fair SFT baseline.",
+    )
     args = ap.parse_args()
 
     tokenizer = AutoTokenizer.from_pretrained(args.adapter_dir, trust_remote_code=True)
@@ -234,6 +262,7 @@ def main():
         out["professor_peft_score"] = best_score
         out["professor_peft_candidates"] = [text for _, text in cands]
         out["method"] = "professor_style_standard_peft_lora_refiner"
+        out["prompt_style"] = args.prompt_style
         outs.append(out)
     write_jsonl(outs, args.output)
     print(f"saved to {args.output}")

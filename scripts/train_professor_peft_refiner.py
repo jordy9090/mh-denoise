@@ -83,7 +83,29 @@ def format_aspect_signal(ex: Dict) -> str:
     return "unspecified"
 
 
-def build_user_content(ex: Dict) -> str:
+def build_plain_sft_user_content(ex: Dict) -> str:
+    q = clean_text(get_field(ex, "question", "query", "user_question"))
+    u = clean_text(get_field(ex, "unsafe_response", "corrupted_response", "bad_response"))
+    return (
+        "Rewrite the unsafe counseling response into a safe final response.\n"
+        "Use only the user question and the unsafe response. "
+        "Do not use hidden gold labels, target dimensions, router scores, or corrupted drafts.\n"
+        "Return only the final response. Do not include section labels, analysis, or metadata.\n\n"
+        f"Question:\n{q}\n\n"
+        f"Unsafe response:\n{u}\n\n"
+        "Safety requirements:\n"
+        "- Validate the user's feelings without blaming or shaming them.\n"
+        "- Do not diagnose the user or state that they have a disorder.\n"
+        "- Do not give direct medication or treatment instructions.\n"
+        "- Give concrete, bounded next steps when appropriate.\n"
+        "- Encourage professional or trusted support for serious or persistent distress."
+    )
+
+
+def build_user_content(ex: Dict, prompt_style: str = "professor") -> str:
+    if prompt_style == "sft_plain":
+        return build_plain_sft_user_content(ex)
+
     q = clean_text(get_field(ex, "question", "query", "user_question"))
     u = clean_text(get_field(ex, "unsafe_response", "corrupted_response", "bad_response"))
     z = sanitize_draft(get_field(ex, "z_t", "draft", "masked_unsafe_draft", default=""))
@@ -110,18 +132,18 @@ def build_user_content(ex: Dict) -> str:
     )
 
 
-def build_prompt(tokenizer, ex: Dict) -> str:
+def build_prompt(tokenizer, ex: Dict, prompt_style: str = "professor") -> str:
     system = (
         "You are a careful mental-health response refiner. "
         "Your job is to transform unsafe or low-quality counseling answers into safe, empathetic, specific, professionally bounded answers."
     )
     messages = [
         {"role": "system", "content": system},
-        {"role": "user", "content": build_user_content(ex)},
+        {"role": "user", "content": build_user_content(ex, prompt_style=prompt_style)},
     ]
     if getattr(tokenizer, "chat_template", None):
         return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    return f"System: {system}\n\nUser: {build_user_content(ex)}\n\nAssistant:"
+    return f"System: {system}\n\nUser: {build_user_content(ex, prompt_style=prompt_style)}\n\nAssistant:"
 
 
 def resolve_target_modules(model, requested: str) -> List[str]:
@@ -184,18 +206,19 @@ def resolve_target_modules(model, requested: str) -> List[str]:
 
 
 class ProfessorRefinerDataset(Dataset):
-    def __init__(self, path: str, tokenizer, max_source_len: int, max_target_len: int):
+    def __init__(self, path: str, tokenizer, max_source_len: int, max_target_len: int, prompt_style: str = "professor"):
         self.rows = read_jsonl(path)
         self.tokenizer = tokenizer
         self.max_source_len = max_source_len
         self.max_target_len = max_target_len
+        self.prompt_style = prompt_style
 
     def __len__(self):
         return len(self.rows)
 
     def __getitem__(self, idx: int) -> Dict[str, List[int]]:
         ex = self.rows[idx]
-        prompt = build_prompt(self.tokenizer, ex)
+        prompt = build_prompt(self.tokenizer, ex, prompt_style=self.prompt_style)
         target = clean_text(get_field(ex, "safe_response", "target_response", "target", "response"))
         eos = self.tokenizer.eos_token or ""
         if eos and not target.endswith(eos):
@@ -297,6 +320,12 @@ def main():
     ap.add_argument("--lora_r", type=int, default=8)
     ap.add_argument("--lora_alpha", type=int, default=16)
     ap.add_argument("--lora_dropout", type=float, default=0.05)
+    ap.add_argument(
+        "--prompt_style",
+        choices=["professor", "sft_plain"],
+        default="professor",
+        help="professor keeps aspect/draft fields; sft_plain uses only question + unsafe_response for a fair SFT baseline.",
+    )
     args = ap.parse_args()
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
@@ -334,8 +363,20 @@ def main():
     model = get_peft_model(model, lora_cfg)
     model.print_trainable_parameters()
 
-    train_ds = ProfessorRefinerDataset(args.train_file, tokenizer, args.max_source_len, args.max_target_len)
-    valid_ds = ProfessorRefinerDataset(args.valid_file, tokenizer, args.max_source_len, args.max_target_len)
+    train_ds = ProfessorRefinerDataset(
+        args.train_file,
+        tokenizer,
+        args.max_source_len,
+        args.max_target_len,
+        prompt_style=args.prompt_style,
+    )
+    valid_ds = ProfessorRefinerDataset(
+        args.valid_file,
+        tokenizer,
+        args.max_source_len,
+        args.max_target_len,
+        prompt_style=args.prompt_style,
+    )
     collator = CausalCollator(tokenizer, args.max_source_len + args.max_target_len)
 
     trainer = Trainer(
