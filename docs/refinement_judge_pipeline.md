@@ -80,17 +80,17 @@ python scripts/prepare_refinement_judge_input.py \
 
 Then run the same judge and timestep aggregate commands with the `valid_modes` paths.
 
-## Exp300 Test T4
+## Exp295 Test T4
 
-Prepare future final test `unsafe_t4` judge input:
+Prepare the current final test `unsafe_t4` judge input:
 
 ```bash
 python scripts/prepare_refinement_judge_input.py \
-  --input outputs/refinement/gemma4_peft_langqkvo_infermatch_exp300_test_t4.jsonl \
-  --output outputs/eval_inputs/refinement_exp300_test_t4_judge_input.jsonl \
+  --input outputs/refinement/gemma4_peft_langqkvo_infermatch_exp295_test_t4.jsonl \
+  --output outputs/eval_inputs/refinement_exp295_test_t4_judge_input.jsonl \
   --response_field peft_response \
-  --system_name peft_qkvo_exp300_t4 \
-  --id_prefix exp300_test_t4 \
+  --system_name peft_qkvo_exp295_t4 \
+  --id_prefix exp295_test_t4 \
   --mode_filter unsafe_t4 \
   --include_unsafe_baseline \
   --include_safe_reference
@@ -100,8 +100,8 @@ Run the judge:
 
 ```bash
 python scripts/run_refinement_llm_judge.py \
-  --input outputs/eval_inputs/refinement_exp300_test_t4_judge_input.jsonl \
-  --output outputs/eval/refinement_exp300_test_t4_judged.jsonl \
+  --input outputs/eval_inputs/refinement_exp295_test_t4_judge_input.jsonl \
+  --output outputs/eval/refinement_exp295_test_t4_judged.jsonl \
   --model gpt-4.1-mini \
   --resume \
   --sleep 0.5
@@ -111,13 +111,13 @@ Aggregate:
 
 ```bash
 python scripts/aggregate_refinement_judge_scores.py \
-  --input outputs/eval/refinement_exp300_test_t4_judged.jsonl \
-  --output_csv outputs/analysis/refinement_exp300_test_t4_by_system.csv \
+  --input outputs/eval/refinement_exp295_test_t4_judged.jsonl \
+  --output_csv outputs/analysis/refinement_exp295_test_t4_by_system.csv \
   --group_by system
 
 python scripts/aggregate_refinement_judge_by_timestep.py \
-  --input outputs/eval/refinement_exp300_test_t4_judged.jsonl \
-  --output_csv outputs/analysis/refinement_exp300_test_t4_by_timestep.csv
+  --input outputs/eval/refinement_exp295_test_t4_judged.jsonl \
+  --output_csv outputs/analysis/refinement_exp295_test_t4_by_timestep.csv
 ```
 
 ## Useful Options
