@@ -186,6 +186,68 @@ python scripts/run_gemma_aspect_moe_real_inference.py \
   --no_repeat_ngram_size 4
 ```
 
+## Staged Inference Z_T
+
+The default inference corruption strategy remains `threshold`, which preserves previous results. To avoid `unsafe_t2`, `unsafe_t3`, and `unsafe_t4` collapsing to identical drafts, use `--zt_strategy staged`.
+
+The staged strategy ranks unsafe spans by aspect-conditioned risk and masks progressively more spans:
+
+```text
+t <= 1: mask 0 spans
+t == 2: mask top ceil(0.33 * n) risky spans
+t == 3: mask top ceil(0.66 * n) risky spans
+t >= 4: mask all spans
+```
+
+This makes the mask sets monotonic: `t2 subset t3 subset t4`.
+
+```bash
+python scripts/run_gemma_aspect_moe_real_inference.py \
+  --base_model google/gemma-4-E4B-it \
+  --adapter_dir outputs/models/gemma4_aspect_moe_exp295_v2_bc/best \
+  --router_dir outputs/models/aspect_router_exp295_multilabel/final \
+  --risk_scorer_dir outputs/models/span_risk_multilabel_v1/best \
+  --input data/splits_exp295/valid_mdlm.jsonl \
+  --output outputs/refinement/gemma4_aspect_moe_exp295_v2_bc_valid_modes_stagedzt.jsonl \
+  --modes empty,unsafe_t2,unsafe_t3,unsafe_t4 \
+  --zt_strategy staged \
+  --max_new_tokens 120 \
+  --temperature 0.0 \
+  --repetition_penalty 1.15 \
+  --no_repeat_ngram_size 4
+```
+
+Collapse check:
+
+```bash
+python - <<'PY'
+import json, collections
+
+p="outputs/refinement/gemma4_aspect_moe_exp295_v2_bc_valid_modes_stagedzt.jsonl"
+rows=[json.loads(l) for l in open(p, encoding="utf-8") if l.strip()]
+
+def key(r):
+    return r.get("base_example_id") or r.get("id") or r.get("question")
+
+groups=collections.defaultdict(dict)
+for r in rows:
+    groups[key(r)][r.get("mode")] = r.get("z_t","")
+
+total=same_234=same_all=0
+for d in groups.values():
+    if all(m in d for m in ["empty","unsafe_t2","unsafe_t3","unsafe_t4"]):
+        total += 1
+        if d["unsafe_t2"] == d["unsafe_t3"] == d["unsafe_t4"]:
+            same_234 += 1
+        if len(set(d.values())) == 1:
+            same_all += 1
+
+print("complete =", total)
+print("same unsafe_t2/t3/t4 z_t =", same_234)
+print("same all modes z_t =", same_all)
+PY
+```
+
 ## Notes
 
 - `g` is still serialized into the prompt for comparability with B/C.

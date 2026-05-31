@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import re
 from pathlib import Path
 
@@ -112,6 +113,51 @@ def make_zt(
     return " ".join(parts), infos
 
 
+def make_zt_staged(unsafe, g, risk_vecs, t, T, mask_token="<MASK>"):
+    spans = split_sentences(unsafe) or [unsafe.strip()]
+    n = len(spans)
+    risks = []
+    for i, span in enumerate(spans):
+        risk_vec = risk_vecs[i] if i < len(risk_vecs) else [0.0] * len(DIMS)
+        risks.append((i, span, rl(g, risk_vec)))
+
+    ranked = sorted(risks, key=lambda x: x[2], reverse=True)
+    ranks = {idx: rank + 1 for rank, (idx, _, _) in enumerate(ranked)}
+
+    if t <= 1 or n == 0:
+        mask_count = 0
+    elif t == 2:
+        mask_count = math.ceil(0.33 * n)
+    elif t == 3:
+        mask_count = math.ceil(0.66 * n)
+    else:
+        mask_count = n
+    if n > 0 and t >= 2:
+        mask_count = max(1, mask_count)
+    mask_count = min(n, mask_count)
+
+    mask_indices = {idx for idx, _, _ in ranked[:mask_count]}
+    risk_by_idx = {idx: risk for idx, _, risk in risks}
+
+    parts, infos = [], []
+    for i, span in enumerate(spans):
+        if i in mask_indices:
+            parts.append(mask_token)
+            state = "MASK"
+        else:
+            parts.append(span)
+            state = "UNSAFE"
+        infos.append({
+            "span": span,
+            "r_l_g": risk_by_idx[i],
+            "rank": ranks[i],
+            "state": state,
+            "strategy": "staged",
+        })
+
+    return " ".join(parts), infos
+
+
 def build_prompt(q, u, z, g, source, t):
     if not z:
         z = "No draft. Rewrite directly from the unsafe response."
@@ -202,6 +248,7 @@ def main():
     ap.add_argument("--T", type=int, default=4)
     ap.add_argument("--modes", default="empty,unsafe_t2,unsafe_t3,unsafe_t4")
     ap.add_argument("--mask_token", default="<MASK>")
+    ap.add_argument("--zt_strategy", choices=["threshold", "staged"], default="threshold")
     ap.add_argument("--max_source_len", type=int, default=512)
     ap.add_argument("--max_new_tokens", type=int, default=180)
     ap.add_argument("--temperature", type=float, default=0.0)
@@ -253,6 +300,8 @@ def main():
         for source, t in modes:
             if source == "empty":
                 z, infos = "", []
+            elif args.zt_strategy == "staged":
+                z, infos = make_zt_staged(u, g, risk_vecs, t, args.T, mask_token=args.mask_token)
             else:
                 z, infos = make_zt(u, g, risk_vecs, t, args.T, mask_token=args.mask_token)
 
@@ -284,6 +333,7 @@ def main():
             out["mode"] = "empty" if source == "empty" else f"unsafe_t{t}"
             out["g"] = {DIMS[i]: float(g[i]) for i in range(len(DIMS))}
             out["z_t"] = z
+            out["zt_strategy"] = args.zt_strategy
             out["span_risks"] = infos
             out["moe_response_raw"] = raw
             out["moe_response"] = cleanup(raw)
