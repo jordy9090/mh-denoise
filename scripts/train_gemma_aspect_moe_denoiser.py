@@ -231,8 +231,10 @@ def dataset_summary(name, dataset):
     print(f"{name} rows:", len(rows))
     print(f"{name} source distribution:", Counter(str(r.get("source", "missing")) for r in rows))
     print(f"{name} g_source distribution:", Counter(str(r.get("g_source", "missing")) for r in rows))
-    weighted = any(bool(r.get("target_weight_spans")) for r in rows)
-    print(f"{name} weighted loss active:", weighted)
+    has_weight_spans = any(bool(r.get("target_weight_spans")) for r in rows)
+    print(f"{name} target weight spans present:", has_weight_spans)
+    print(f"{name} lambda_y:", dataset.lambda_y)
+    print(f"{name} risk-weighted loss active:", has_weight_spans and dataset.lambda_y != 0.0)
 
 
 def load_base_model(model_name, use_4bit):
@@ -272,6 +274,7 @@ def build_moe_config(args, wrapped_names=None, init_report=None):
         "init_shared_adapter_dir": args.init_shared_adapter_dir,
         "freeze_shared_lora": args.freeze_shared_lora,
         "init_shared_report": init_report,
+        "lambda_y": args.lambda_y,
     }
 
 
@@ -307,6 +310,12 @@ def main():
     ap.add_argument("--no_initial_eval", action="store_true")
     ap.add_argument("--no_4bit", action="store_true")
     ap.add_argument("--num_workers", type=int, default=2)
+    ap.add_argument(
+        "--lambda_y",
+        type=float,
+        default=1.5,
+        help="Risk-weight strength for target tokens. Use 0.0 for MoE denoising SFT without risk-weighted CE.",
+    )
     args = ap.parse_args()
 
     out = Path(args.output_dir)
@@ -350,8 +359,8 @@ def main():
     print(f"trainable percent: {pct:.4f}")
 
     device = next(model.parameters()).device
-    train = DenoiseMoEDS(args.train_file, tok, args.max_source_len, args.max_target_len)
-    valid = DenoiseMoEDS(args.valid_file, tok, args.max_source_len, args.max_target_len)
+    train = DenoiseMoEDS(args.train_file, tok, args.max_source_len, args.max_target_len, lambda_y=args.lambda_y)
+    valid = DenoiseMoEDS(args.valid_file, tok, args.max_source_len, args.max_target_len, lambda_y=args.lambda_y)
     dataset_summary("train", train)
     dataset_summary("valid", valid)
 
