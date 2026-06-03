@@ -72,6 +72,29 @@ def rl(g, risk_vec):
     return max(float(g[k]) * float(risk_vec[k]) for k in range(len(DIMS)))
 
 
+def top_risk_dim(g, risk_vec):
+    scores = []
+    for k in range(len(DIMS)):
+        rv = float(risk_vec[k]) if k < len(risk_vec) else 0.0
+        scores.append(float(g[k]) * rv)
+    if not scores:
+        return 0.0, DIMS[0]
+    best = max(range(len(scores)), key=lambda k: scores[k])
+    return scores[best], DIMS[best]
+
+
+def staged_mask_count(n_candidates, t, t2_frac, t3_frac):
+    if t <= 1 or n_candidates == 0:
+        return 0
+    if t == 2:
+        mask_count = math.ceil(float(t2_frac) * n_candidates)
+    elif t == 3:
+        mask_count = math.ceil(float(t3_frac) * n_candidates)
+    else:
+        mask_count = n_candidates
+    return max(0, min(n_candidates, mask_count))
+
+
 def make_zt(unsafe, g, risk_vecs, t, T, mask_token="<MASK>", rho=0.15, lambda_mask=0.75, risk_threshold=0.35, mask_threshold=0.35):
     spans = split_sentences(unsafe) or [unsafe.strip()]
     beta = t / float(T)
@@ -140,11 +163,93 @@ def make_zt_staged(unsafe, g, risk_vecs, t, T, mask_token="<MASK>"):
     return " ".join(parts), infos
 
 
+def make_zt_staged_risk(unsafe, g, risk_vecs, t, T, mask_token="<MASK>", risk_threshold=0.35, t2_frac=0.33, t3_frac=0.66):
+    spans = split_sentences(unsafe) or [unsafe.strip()]
+    risks = []
+    candidates = []
+    for i, span in enumerate(spans):
+        risk_vec = risk_vecs[i] if i < len(risk_vecs) else [0.0] * len(DIMS)
+        risk, top_dim = top_risk_dim(g, risk_vec)
+        item = {"idx": i, "span": span, "risk": risk, "top_dim": top_dim}
+        risks.append(item)
+        if risk >= risk_threshold:
+            candidates.append(item)
+
+    ranked = sorted(candidates, key=lambda x: x["risk"], reverse=True)
+    ranks = {item["idx"]: rank + 1 for rank, item in enumerate(ranked)}
+    mask_count = staged_mask_count(len(ranked), t, t2_frac, t3_frac)
+    mask_indices = {item["idx"] for item in ranked[:mask_count]}
+
+    parts, infos = [], []
+    for item in risks:
+        if item["idx"] in mask_indices:
+            parts.append(mask_token)
+            state = "MASK"
+        else:
+            parts.append(item["span"])
+            state = "UNSAFE"
+        infos.append({
+            "span": item["span"],
+            "r_l_g": item["risk"],
+            "top_dim": item["top_dim"],
+            "rank": ranks.get(item["idx"]),
+            "candidate": item["idx"] in ranks,
+            "state": state,
+            "strategy": "staged_risk",
+        })
+
+    return " ".join(parts), infos
+
+
+def make_zt_risk_tag(unsafe, g, risk_vecs, t, T, risk_threshold=0.35, t2_frac=0.33, t3_frac=0.66, risk_tag_format="[Risk: {dim}] {span} [/Risk]"):
+    spans = split_sentences(unsafe) or [unsafe.strip()]
+    risks = []
+    candidates = []
+    for i, span in enumerate(spans):
+        risk_vec = risk_vecs[i] if i < len(risk_vecs) else [0.0] * len(DIMS)
+        risk, top_dim = top_risk_dim(g, risk_vec)
+        item = {"idx": i, "span": span, "risk": risk, "top_dim": top_dim}
+        risks.append(item)
+        if risk >= risk_threshold:
+            candidates.append(item)
+
+    ranked = sorted(candidates, key=lambda x: x["risk"], reverse=True)
+    ranks = {item["idx"]: rank + 1 for rank, item in enumerate(ranked)}
+    mark_count = staged_mask_count(len(ranked), t, t2_frac, t3_frac)
+    mark_indices = {item["idx"] for item in ranked[:mark_count]}
+
+    parts, infos = [], []
+    for item in risks:
+        if item["idx"] in mark_indices:
+            parts.append(risk_tag_format.format(dim=item["top_dim"], span=item["span"], risk=item["risk"]))
+            state = "MARKED"
+        else:
+            parts.append(item["span"])
+            state = "UNSAFE"
+        infos.append({
+            "span": item["span"],
+            "r_l_g": item["risk"],
+            "top_dim": item["top_dim"],
+            "rank": ranks.get(item["idx"]),
+            "candidate": item["idx"] in ranks,
+            "state": state,
+            "strategy": "risk_tag",
+        })
+
+    return " ".join(parts), infos
+
+
 def build_prompt(q, u, z, g, source, t):
     if not z:
         z = "No draft. Rewrite directly from the unsafe response."
 
     g_text = ", ".join(f"{DIMS[i]}={float(g[i]):.2f}" for i in range(len(DIMS)))
+    risk_tag_instruction = ""
+    if "[Risk:" in z or "<RISK" in z:
+        risk_tag_instruction = (
+            "Spans marked with [Risk: ...] or <RISK ...> are likely unsafe or low-quality. "
+            "Revise those spans while preserving useful context from the draft.\n\n"
+        )
 
     return (
         "Rewrite the unsafe counseling response into a safe response.\n"
@@ -153,6 +258,7 @@ def build_prompt(q, u, z, g, source, t):
         f"Aspect scores:\n{g_text}\n\n"
         f"Question:\n{q.strip()}\n\n"
         f"Unsafe response to fix:\n{u.strip()}\n\n"
+        f"{risk_tag_instruction}"
         f"Draft to revise:\n{z.strip()}\n\n"
         f"Corruption: {source}, t={t}\n\n"
         "Safe response:\n"
@@ -173,6 +279,8 @@ def cleanup(text):
             after = text.split(m)[-1].strip()
             text = before if before else after
     text = text.replace("<MASK>", "").replace("[needs revision]", "").strip()
+    text = re.sub(r"\[/?Risk[^\]]*\]", "", text)
+    text = re.sub(r"</?RISK[^>]*>", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text)
     text = re.sub(r"\s+([.,!?;:])", r"\1", text)
     return text.strip()
@@ -200,7 +308,11 @@ def main():
     ap.add_argument("--T", type=int, default=4)
     ap.add_argument("--modes", default="empty,unsafe_t2,unsafe_t3,unsafe_t4")
     ap.add_argument("--mask_token", default="<MASK>")
-    ap.add_argument("--zt_strategy", choices=["threshold", "staged"], default="threshold")
+    ap.add_argument("--zt_strategy", choices=["threshold", "staged", "staged_risk", "risk_tag"], default="threshold")
+    ap.add_argument("--risk_threshold", type=float, default=0.35)
+    ap.add_argument("--t2_frac", type=float, default=0.33)
+    ap.add_argument("--t3_frac", type=float, default=0.66)
+    ap.add_argument("--risk_tag_format", default="[Risk: {dim}] {span} [/Risk]")
     ap.add_argument("--max_source_len", type=int, default=512)
     ap.add_argument("--max_new_tokens", type=int, default=180)
     ap.add_argument("--temperature", type=float, default=0.0)
@@ -256,8 +368,32 @@ def main():
                 z, infos = "", []
             elif args.zt_strategy == "staged":
                 z, infos = make_zt_staged(u, g, risk_vecs, t, args.T, mask_token=args.mask_token)
+            elif args.zt_strategy == "staged_risk":
+                z, infos = make_zt_staged_risk(
+                    u,
+                    g,
+                    risk_vecs,
+                    t,
+                    args.T,
+                    mask_token=args.mask_token,
+                    risk_threshold=args.risk_threshold,
+                    t2_frac=args.t2_frac,
+                    t3_frac=args.t3_frac,
+                )
+            elif args.zt_strategy == "risk_tag":
+                z, infos = make_zt_risk_tag(
+                    u,
+                    g,
+                    risk_vecs,
+                    t,
+                    args.T,
+                    risk_threshold=args.risk_threshold,
+                    t2_frac=args.t2_frac,
+                    t3_frac=args.t3_frac,
+                    risk_tag_format=args.risk_tag_format,
+                )
             else:
-                z, infos = make_zt(u, g, risk_vecs, t, args.T, mask_token=args.mask_token)
+                z, infos = make_zt(u, g, risk_vecs, t, args.T, mask_token=args.mask_token, risk_threshold=args.risk_threshold)
 
             prompt = build_prompt(q, u, z, g, source, t)
             enc = tok(prompt, return_tensors="pt", truncation=True, max_length=args.max_source_len).to(model_device)
