@@ -558,7 +558,9 @@ def compute_joint_step(
     den_weights = den_batch.pop("token_weights")
     loss_den = weighted_ce(model(**den_batch).logits, den_labels, den_weights)
 
-    set_moe_gates(model, g_used, detach=False if train else True)
+    # L_sft uses detached gates to avoid reusing the router graph across two
+    # Gemma forwards; router-denoiser coupling is provided by L_den.
+    set_moe_gates(model, g_used, detach=True)
     sft_labels = sft_batch.pop("labels")
     sft_weights = sft_batch.pop("token_weights")
     loss_sft = weighted_ce(model(**sft_batch).logits, sft_labels, sft_weights)
@@ -765,6 +767,7 @@ def print_startup(args, train_ds, valid_ds, wrapped_names, model, router, shared
     print("zt_strategy:", args.zt_strategy)
     print("train timesteps:", args.train_timesteps)
     print("valid g source:", args.valid_g_source, "valid timesteps:", args.valid_timesteps)
+    print("gradient checkpointing enabled:", bool(args.enable_gradient_checkpointing))
     print("MoE gates detach: False")
 
 
@@ -818,6 +821,11 @@ def main():
     ap.add_argument("--save_every", type=int, default=100)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--no_4bit", action="store_true")
+    ap.add_argument(
+        "--enable_gradient_checkpointing",
+        action="store_true",
+        help="Enable Gemma gradient checkpointing. Disabled by default because full-joint gates are stored as module state.",
+    )
     ap.add_argument("--num_workers", type=int, default=0)
     args = ap.parse_args()
 
@@ -850,7 +858,24 @@ def main():
     model = load_base_model(args.model, use_4bit)
     model.config.use_cache = False
     if use_4bit:
-        model = prepare_model_for_kbit_training(model)
+        try:
+            model = prepare_model_for_kbit_training(
+                model,
+                use_gradient_checkpointing=args.enable_gradient_checkpointing,
+            )
+        except TypeError:
+            model = prepare_model_for_kbit_training(model)
+    if args.enable_gradient_checkpointing:
+        if hasattr(model, "gradient_checkpointing_enable"):
+            try:
+                model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+            except TypeError:
+                model.gradient_checkpointing_enable()
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+    elif hasattr(model, "gradient_checkpointing_disable"):
+        model.gradient_checkpointing_disable()
+    model.config.use_cache = False
     freeze_model_parameters(model)
 
     base_config = {

@@ -32,6 +32,8 @@ router logits -> sigmoid(g_pred) -> g -> tau(g) -> expert mixture -> LM logits -
 
 The serialized prompt text also contains `g` for comparability with prior runs, but prompt text construction is discrete and does not carry gradients.
 
+In v1, router-denoiser coupling is carried by `L_den`. `L_sft` uses detached MoE gates so the same router-derived gate graph is not reused across two Gemma forwards in one step.
+
 ## What Is Not Joint Yet
 
 The span-risk scorer is frozen in v1.
@@ -56,6 +58,8 @@ We train the router, risk scorer, corruption process, and denoiser fully end-to-
 - `scripts/aspect_moe_lora.py`: adds optional differentiable gate passing via `set_moe_gates(..., detach=False)`.
 
 Existing PEFT and MoE scripts keep their current behavior because gate detaching remains the default.
+
+Gradient checkpointing is disabled by default in the full-joint script. The MoE gate tensor is stored as module state inside every `AspectMoELinear`; checkpoint recomputation can otherwise reread a changed or freed gate graph during backward.
 
 ## Command Template
 
@@ -108,6 +112,7 @@ Startup should report:
 - shared LoRA trainable: `True`
 - expert LoRA trainable: `True`
 - `MoE gates detach: False`
+- `gradient checkpointing enabled: False`
 - `lambda_sft`, `lambda_router`, `lambda_y`, `aspect_tf_prob`
 - `zt_strategy`
 
