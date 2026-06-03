@@ -1,10 +1,10 @@
 # Professor Method Section Draft
 
-This note preserves the Overleaf method-section draft used to align the implementation. MoE expert routing and iterative denoising are not part of the current implementation scope.
+This note mirrors the professor-updated Overleaf method-section draft used to align the implementation.
 
 ## Methodology
 
-Figure~\ref{fig:method} summarizes the proposed framework. The method first constructs aspect-specific unsafe drafts from safe mental-health responses. Then, it applies risk-aware masking or deletion to create corrupted drafts at different corruption levels. A shared aspect-conditioned LoRA denoiser is trained to recover the safe response from the question, unsafe draft, aspect vector, and corrupted draft. At inference time, the aspect router estimates the violated counseling dimensions from the question and unsafe draft, and the same denoiser generates the refined safe response.
+Figure \ref{fig:method} summarizes the proposed framework. The method first constructs aspect-specific unsafe drafts from safe mental-health responses. Then, it applies risk-aware masking or deletion to create corrupted drafts at different corruption levels. A shared aspect-conditioned LoRA denoiser is trained to recover the safe response from the question, unsafe draft, aspect vector, and corrupted draft. At inference time, the aspect router estimates the violated counseling dimensions from the question and unsafe draft, and the same denoiser generates the refined safe response.
 
 ## Aspect Router and Expert Conditioning
 
@@ -29,15 +29,9 @@ where \(\hat{d}_k\) estimates the probability that \(u\) violates aspect \(k\) f
 
 To reduce exposure mismatch between training and inference, the denoiser is conditioned on a mixture of the ground-truth aspect label and the predicted router output. During training, we sample \(m_{\mathrm{tf}} \sim \mathrm{Bernoulli}(p_{\mathrm{tf}})\) and define
 \[
-    g
-    =
-    m_{\mathrm{tf}} d
-    +
-    (1-m_{\mathrm{tf}})\hat{d}.
+    g = m_{\mathrm{tf}} d + (1-m_{\mathrm{tf}})\hat{d}.
 \]
-At inference time, \(g=\hat{d}\) unless an external target aspect vector is supplied.
-
-The same aspect signal is used to activate aspect-specific expert adapters. For each aspect \(k\), we define a low-rank expert update
+At inference time, \(g=\hat{d}\) unless an external target aspect vector is supplied. The same aspect signal is used to activate aspect-specific expert adapters. For each aspect \(k\), we define a low-rank expert update
 \[
     \Delta W_k
     =
@@ -78,17 +72,7 @@ be a monotonic span alignment between the unsafe response and the safe response.
     \max_{k \in \mathcal{K}}
     g_k R_{\phi,k}(q,a_{\ell}),
 \]
-where \(R_{\phi,k}(q,a_{\ell}) \in [0,1]\) estimates whether span \(a_{\ell}\) violates aspect \(k\). Higher values of \(r_{\ell}(g)\) indicate spans that are more likely to violate the active counseling aspects.
-
-The corruption strength at timestep \(t\) is controlled by
-\[
-    \beta_t=\frac{t}{T}.
-\]
-For each aligned span pair \((a_{\ell},b_{\ell})\), we sample a corruption operation
-\[
-    c_{\ell}^{(t)} \in \{\mathrm{SAFE}, \mathrm{UNSAFE}, \mathrm{MASK}\}.
-\]
-The operation probabilities are defined as
+where \(R_{\phi,k}(q,a_{\ell}) \in [0,1]\) estimates whether span \(a_{\ell}\) violates aspect \(k\). Higher values of \(r_{\ell}(g)\) indicate spans that are more likely to violate the active counseling aspects. The corruption strength at timestep \(t\) is controlled by \(\beta_t=t / T\). For each aligned pair \((a_{\ell},b_{\ell})\), we sample a corruption operation \(c_{\ell}^{(t)} \in \{\mathrm{SAFE}, \mathrm{UNSAFE}, \mathrm{MASK}\}\). The operation probabilities are defined as
 \[
     P(c_{\ell}^{(t)}=\mathrm{SAFE}) = 1-\beta_t,
 \]
@@ -154,7 +138,7 @@ where
     \quad
     \sum_{b \in \mathcal{B}} \omega_b = 1.
 \]
-The bridge corruption \(q_{\mathrm{bridge}}\) is the span-level edit bridge defined above. The unsafe corruption \(q_{\mathrm{unsafe}}\) masks or deletes risky spans in \(u\) and matches the inference setting. The safe corruption \(q_{\mathrm{safe}}\) corrupts spans in \(y\), which provides standard denoising supervision. The empty corruption \(q_{\mathrm{empty}}\) removes the draft variable and reduces to direct supervised refinement. The final training objective therefore includes both draft-conditioned denoising and direct conditional generation.
+The bridge corruption \(q_{\mathrm{bridge}}\) is the span-level edit bridge defined above. The unsafe corruption \(q_{\mathrm{unsafe}}\) masks or deletes risky spans in \(u\) and matches the inference setting. The safe corruption \(q_{\mathrm{safe}}\) corrupts spans in \(y\), which provides standard denoising supervision. The empty corruption \(q_{\mathrm{empty}}\) removes the draft variable and reduces to direct supervised refinement. The final training objective includes both denoising and conditional generation.
 
 ## Decoder-Backed Reverse Denoiser
 
@@ -176,7 +160,37 @@ the model defines
 \]
 The decoder predicts the full safe response, so the method supports variable-length rewriting, deletion of unsafe content, insertion of safety guidance, and restructuring of the response. The aspect router selects the expert mixture, and the decoder generates the final safe response conditioned on the selected aspect profile.
 
-## Training Objective
+\begin{table*}[t]
+\centering
+\small
+\caption{Main results on mental-health response refinement. Unsafe Response measures the effect of synthetic corruption. Risk-aware denoising refiner denotes the PEFT Q/K/V/O denoiser selected on validation with the \texttt{unsafe\_t3} inference mode. Gold Safe Reference is reported as an upper-bound reference. Toxicity follows the CounselBench convention where lower is safer. Medical advice violation is computed as $6-\text{medical-advice-safety score}$ (lower is better).}
+\label{tab:main_results}
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Method}
+& \textbf{Overall $\uparrow$}
+& \textbf{Empathy $\uparrow$}
+& \textbf{Specificity $\uparrow$}
+& \textbf{Factual Cons. $\uparrow$}
+& \textbf{Toxicity $\downarrow$}
+& \textbf{Med. Adv. Viol. $\downarrow$} \\
+\midrule
+Unsafe Response
+& 2.26 & 2.51 & 2.14 & 3.43 & 1.59 & 2.34 \\
+Prompt Rewrite
+& 3.96 & 4.86 & 3.87 & 4.97 & 1.00 & 1.02 \\
+SFT Refiner
+& 3.63 & 4.06 & 3.48 & 4.71 & 1.00 & 1.21 \\
+\textbf{Risk-aware denoising refiner}
+& \textbf{3.58} & \textbf{4.05} & \textbf{3.42} & \textbf{4.71} & \textbf{1.01} & \textbf{1.19} \\
+\midrule
+Gold Safe Reference
+& 4.51 & 4.58 & 4.38 & 4.99 & 1.00 & 1.00 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+## Training and Inference
 
 For each training example, we predict an aspect vector, sample an aspect conditioning vector \(g\), sample a timestep \(t\), sample a corrupted draft \(z_t\), and maximize the likelihood of the safe response. The denoising loss is
 \[
@@ -194,11 +208,11 @@ For each training example, we predict an aspect vector, sample an aspect conditi
     \left(
     y_j
     \mid
-    y_{<j},q,u,g,z_t,t
+    y_{<j},\mathcal{S}
     \right)
-    \right].
+    \right],
 \]
-The token weight \(\gamma_j\) gives additional weight to target tokens associated with high-risk edits:
+where \(\mathcal{S} = (q,u,g,z_t,t)\). The token weight \(\gamma_j\) gives additional weight to target tokens associated with high-risk edits:
 \[
     \gamma_j
     =
@@ -225,7 +239,7 @@ where \(\lambda_y\) controls the strength of risk-weighted supervision. If no al
     \right)
     \right].
 \]
-The final objective is
+The objective below trains the model to reconstruct safe responses from multiple corruption levels.
 \[
     \mathcal{L}
     =
@@ -237,23 +251,12 @@ The final objective is
     \lambda_{\mathrm{router}}
     \mathcal{L}_{\mathrm{router}}.
 \]
-This objective trains the model to reconstruct safe responses from multiple corruption levels, learn aspect-specific violation routing, and preserve the ability to refine directly from the unsafe response.
 
-## Inference
-
-At inference time, the model receives a question \(q\) and an unsafe response \(u\). The router first estimates the violated counseling aspects:
-\[
-    \hat{d}=H_{\omega}(q,u).
-\]
-If an external target aspect vector \(d_{\mathrm{ext}}\) is available, the conditioning vector is
+**Inference.** At inference time, the model receives a question \(q\) and an unsafe response \(u\). The router first estimates the violated counseling aspects as \(\hat{d}=H_{\omega}(q,u)\). If an external target aspect vector \(d_{\mathrm{ext}}\) is available, the conditioning vector is
 \[
     g=\max(\hat{d},d_{\mathrm{ext}}),
 \]
-where the maximum is applied elementwise. Otherwise, \(g=\hat{d}\). We compute span-level risk scores over the unsafe response and construct a masked unsafe draft
-\[
-    z_T = C(u,g),
-\]
-where \(C\) masks or removes spans whose aspect-conditioned risk score exceeds a threshold. The final response is generated by
+where the maximum is applied elementwise. Otherwise, \(g=\hat{d}\). We compute span-level risk scores over the unsafe response and construct a masked unsafe draft \(z_T = C(u,g)\), where \(C\) masks or removes spans whose aspect-conditioned risk score exceeds a threshold. The final response is generated by
 \[
     \hat{y}
     =
@@ -265,4 +268,8 @@ where \(C\) masks or removes spans whose aspect-conditioned risk score exceeds a
     q,u,g,z_T,T
     \right).
 \]
-The primary inference procedure uses a single reverse denoising step from the masked unsafe draft to the final safe response. An iterative variant can also be used by applying the same denoiser across a decreasing sequence of timesteps. Iterative denoising is out of scope for the current v2 data-generation implementation.
+The primary inference procedure uses a single reverse denoising step from the masked unsafe draft to the final safe response. An iterative variant can also be used by applying the same denoiser across a decreasing sequence of timesteps:
+\[
+    T=t_K > t_{K-1} > \cdots > t_0=0.
+\]
+At each step, the previous prediction is converted into the next draft and passed back to the denoiser.

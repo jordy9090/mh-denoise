@@ -79,8 +79,8 @@ class AspectMoELinear(nn.Module):
             nn.init.kaiming_uniform_(self.A_expert[k], a=math.sqrt(5))
             nn.init.zeros_(self.B_expert[k])
 
-    def set_gates(self, g):
-        self.current_gates = g.detach()
+    def set_gates(self, g, detach=True):
+        self.current_gates = g.detach() if detach else g
 
     def _tau_for_input(self, x):
         if self.current_gates is None:
@@ -195,11 +195,11 @@ def wrap_aspect_moe_layers(model, config):
     return wrapped
 
 
-def set_moe_gates(model, g):
+def set_moe_gates(model, g, detach=True):
     n = 0
     for module in model.modules():
         if isinstance(module, AspectMoELinear):
-            module.set_gates(g)
+            module.set_gates(g, detach=detach)
             n += 1
     if n == 0:
         raise RuntimeError("No AspectMoELinear modules found. Did you call wrap_aspect_moe_layers?")
