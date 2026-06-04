@@ -1,6 +1,6 @@
 # Residual MLP MoE Pipeline
 
-This is the simpler professor-requested alternative to the LoRA-expert MoE.
+This is a simpler residual-MLP alternative to the LoRA-expert MoE.
 
 ## Method
 
