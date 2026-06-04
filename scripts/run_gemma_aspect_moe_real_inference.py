@@ -23,6 +23,22 @@ def write_jsonl(rows, path):
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def require_checkpoint_dir(value, label, expected_files=()):
+    path = Path(value)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{label} does not exist: {value}\n"
+            f"Current working directory: {Path.cwd()}\n"
+            "Check that the checkpoint finished saving and that the shell variable points to the right run."
+        )
+    if not path.is_dir():
+        raise NotADirectoryError(f"{label} is not a directory: {value}")
+    if expected_files and not any((path / name).exists() for name in expected_files):
+        expected = ", ".join(expected_files)
+        raise FileNotFoundError(f"{label} is missing expected checkpoint files under {value}: {expected}")
+    return str(path.resolve())
+
+
 def get_field(ex, *names, default=""):
     for name in names:
         if name in ex and ex[name] is not None:
@@ -371,6 +387,13 @@ def main():
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    args.adapter_dir = require_checkpoint_dir(args.adapter_dir, "--adapter_dir", ("moe_config.json", "moe_adapter.pt"))
+    args.router_dir = require_checkpoint_dir(args.router_dir, "--router_dir", ("config.json",))
+    args.risk_scorer_dir = require_checkpoint_dir(args.risk_scorer_dir, "--risk_scorer_dir", ("config.json",))
+    print("adapter_dir:", args.adapter_dir)
+    print("router_dir:", args.router_dir)
+    print("risk_scorer_dir:", args.risk_scorer_dir)
 
     router_tok = AutoTokenizer.from_pretrained(args.router_dir)
     router = AutoModelForSequenceClassification.from_pretrained(args.router_dir).to(device).eval()

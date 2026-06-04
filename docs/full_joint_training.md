@@ -153,3 +153,30 @@ python scripts/run_gemma_aspect_moe_real_inference.py \
   --repetition_penalty 1.15 \
   --no_repeat_ngram_size 4
 ```
+
+## Troubleshooting
+
+If inference fails before generation and the next sanity script says the output JSONL does not exist, check the checkpoint paths first:
+
+```bash
+echo "$ADAPTER_DIR"
+echo "$ROUTER_DIR"
+echo "$RISK_SCORER_DIR"
+ls -lah "$ADAPTER_DIR" "$ROUTER_DIR" "$RISK_SCORER_DIR"
+```
+
+For a full-joint checkpoint, `$ROUTER_DIR` must point to the nested `router/` directory inside the selected checkpoint, for example:
+
+```bash
+ROUTER_DIR=outputs/models/gemma4_full_joint_exp295_v1/final/router
+```
+
+The inline Python heredoc needs a space between `python` and `-`:
+
+```bash
+python - <<'PY'
+print("ok")
+PY
+```
+
+Common shell typos that will stop later stages are `python-`, `mkdir-p`, `--sleep0.5`, and arguments like `--adapter_dir"$ADAPTER_DIR"` without a space.
