@@ -19,7 +19,7 @@ def clean_text(x):
 def main():
     df = pd.read_csv(INPUT_PATH)
 
-    # 점수 높은 response만 safe target 후보로 사용
+    # Use only high-scoring responses as safe target candidates.
     for col in ["overall_score", "empathy_score", "specificity_score", "factual_consistency_score", "toxicity_score"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 

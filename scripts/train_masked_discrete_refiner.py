@@ -87,7 +87,7 @@ class MaskedRefineDataset(Dataset):
         if len(tgt_ids) == 0:
             tgt_ids = [self.tok.unk_token_id]
 
-        # MDLM-style: timestep t를 mask probability로 단순화
+        # MDLM-style simplification: sample mask probability instead of timestep t.
         mask_prob = self.rng.uniform(self.min_mask_prob, self.max_mask_prob)
 
         corrupted_tgt = []
@@ -100,7 +100,7 @@ class MaskedRefineDataset(Dataset):
                 corrupted_tgt.append(tid)
                 labels_tgt.append(-100)
 
-        # 최소 1개는 반드시 mask
+        # Ensure at least one token is masked.
         if all(x == -100 for x in labels_tgt):
             j = self.rng.randrange(len(tgt_ids))
             corrupted_tgt[j] = self.tok.mask_token_id

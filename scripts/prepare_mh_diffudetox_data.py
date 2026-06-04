@@ -67,7 +67,7 @@ def main():
     test_pairs = [convert_pair(x) for x in test_rows]
 
     # Unconditional fluent/supportive response corpus.
-    # Leakage 방지를 위해 train split의 safe_response만 사용.
+    # Use only train split safe responses to prevent leakage.
     seen = set()
     flu_rows = []
     for ex in train_rows2:

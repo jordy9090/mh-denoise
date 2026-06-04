@@ -38,7 +38,7 @@ def main():
 
     selected = []
     for dim, idxs in sorted(by_dim.items()):
-        selected.extend(idxs[:2])  # dimension별 2개씩
+        selected.extend(idxs[:2])  # Two examples per dimension.
 
     with open(out_path, "w", encoding="utf-8") as out:
         out.write("# Refinement Output Preview\n\n")
