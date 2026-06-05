@@ -1,5 +1,7 @@
 # Refinement LLM Judge Pipeline
 
+Status: support note for evaluation, not the current method document.
+
 These scripts evaluate refinement outputs from `scripts/run_gemma_peft_real_inference.py` without overwriting model outputs.
 
 The judge follows the CounselBench/KDD-style toxicity convention: `toxicity=1` means not toxic at all and `toxicity=5` means highly toxic, shaming, dismissive, or harmful. Lower toxicity is better. The five other metrics are 1-5 where higher is better:

@@ -1,49 +1,64 @@
 # Selective Risk-Aware Refinement Pipeline
 
-This pipeline uses the stable SFT refiner as the primary response repair model and applies a weak risk-aware denoiser only when the SFT output still appears risky.
+Status: current professor-proposed pipeline.
 
-## Method
+This document is the active method note for the SFT-first cascade. Older MoE, full-joint, and residual-MLP experiments are not part of this pipeline.
+
+## Professor Proposal
 
 ```text
-question, unsafe_response
-  -> SFT refiner
-  -> sft_response
-  -> safety/risk gate
-  -> if safe: final_response = sft_response
-  -> if risky:
-       z_t_from_sft = C(sft_response, g_sft)
-       denoiser_response = risk_refiner(question, unsafe_response, sft_response, z_t_from_sft, g_sft)
-       final_response = denoiser_response only if risk decreases and specificity is preserved
+Stage 1: SFT Refiner
+q + unsafe_response -> safe_response
+
+Stage 2: Risk-aware Denoiser
+Initialize from the SFT checkpoint.
+q + unsafe_response + sft_response + g + z_t + risk_spans -> safe_response
+Continue tuning with a weak learning rate.
+
+Inference:
+unsafe draft
+  -> generate SFT Refiner output
+  -> run safety gate
+  -> if safe, use the SFT output
+  -> if unsafe, call the denoiser
+  -> use denoiser output only if safety improves and specificity is preserved
+  -> otherwise keep the SFT output
 ```
 
-The important design choice is that `z_t_from_sft` is constructed from the SFT response, not from the original unsafe response. The original unsafe response is retained only as context so that the risk-tuned model can recover useful details if the SFT response is too generic.
+The implementation follows this proposal with one important operational choice: `z_t` and `risk_spans` are constructed from `sft_response`, not from the original `unsafe_response`. The denoiser is therefore a residual repair model for risks that remain after the SFT refiner, while the original unsafe response is retained only as context.
+
+## Active Checkpoints
+
+Use the q+u-only SFT adapter as the first-stage anchor:
+
+```bash
+SFT_ADAPTER=outputs/models/gemma4_peft_sft_plain_exp295/final
+SFT_PROMPT_STYLE=sft_plain
+```
+
+This is the intended anchor for the current pipeline. Do not use `outputs/models/professor_peft_refiner_textonly_main/final` as the main anchor; that checkpoint belongs to an older professor-style SFT refiner family with different inputs.
 
 ## Files
 
-- `scripts/build_sft_outputs_for_risk_tuning.py`: runs an SFT adapter and saves `sft_response`.
+- `scripts/build_sft_outputs_for_risk_tuning.py`: runs the SFT adapter and saves `sft_response`.
 - `scripts/train_gemma_risk_tune_from_sft.py`: initializes from the SFT LoRA adapter and weakly tunes on risk-corrupted SFT responses.
 - `scripts/run_gemma_selective_risk_refinement.py`: runs the selective SFT-first cascade with accept/reject rules.
 - `scripts/selective_risk_refinement_utils.py`: shared prompt, scoring, corruption, and selection utilities.
 
-## 0. Choose The SFT Refiner Anchor
+## 0. Ensure The SFT Anchor Exists
 
-There are two valid anchors, but they answer different experimental questions.
-
-- Existing stable anchor: `outputs/models/professor_peft_refiner_textonly_main/final`. This is a text-decoder-only PEFT SFT refiner, usually trained with the professor-style prompt (`question`, `unsafe_response`, `g`, `z_t`, `t`). Use `--sft_prompt_style professor` with this adapter.
-- Clean fair anchor: `outputs/models/gemma4_peft_sft_plain_exp295/final`. This is the q+u-only SFT baseline on the exp295 split. Use `--sft_prompt_style sft_plain` with this adapter.
-
-For a fast fallback experiment, reuse the existing stable anchor:
+If the q+u-only SFT adapter is already available, use it directly. If it is only available on another machine, copy the model directory before continuing.
 
 ```bash
-SFT_ADAPTER=outputs/models/professor_peft_refiner_textonly_main/final
-SFT_PROMPT_STYLE=professor
+ls -lh outputs/models/gemma4_peft_sft_plain_exp295/final
 ```
 
-For a clean main-table comparison, train the fair exp295 SFT anchor:
+If it is missing, reproduce it with:
 
 ```bash
 OUT=outputs/models/gemma4_peft_sft_plain_exp295
 LOG=outputs/logs/train_gemma4_peft_sft_plain_exp295.log
+mkdir -p outputs/logs
 
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 nohup python -u scripts/train_professor_peft_refiner_textonly.py \
@@ -67,32 +82,21 @@ nohup python -u scripts/train_professor_peft_refiner_textonly.py \
   > "$LOG" 2>&1 &
 ```
 
-Then use:
-
-```bash
-SFT_ADAPTER=outputs/models/gemma4_peft_sft_plain_exp295/final
-SFT_PROMPT_STYLE=sft_plain
-```
-
 ## 1. Build SFT Outputs
 
 ```bash
 cd ~/mh-denoise
 conda activate mh-denoise
 
-if [ -z "${SFT_ADAPTER:-}" ]; then
-  SFT_ADAPTER=outputs/models/gemma4_peft_sft_plain_exp295/final
-fi
-if [ -z "${SFT_PROMPT_STYLE:-}" ]; then
-  SFT_PROMPT_STYLE=sft_plain
-fi
+SFT_ADAPTER=outputs/models/gemma4_peft_sft_plain_exp295/final
+SFT_PROMPT_STYLE=sft_plain
 
 python scripts/build_sft_outputs_for_risk_tuning.py \
   --base_model google/gemma-4-E4B-it \
   --adapter_dir "$SFT_ADAPTER" \
   --sft_prompt_style "$SFT_PROMPT_STYLE" \
   --input data/splits_exp295/train_mdlm.jsonl \
-  --output outputs/refinement/sft_refiner_train_outputs.jsonl \
+  --output outputs/refinement/sft_plain_exp295_train_outputs.jsonl \
   --max_new_tokens 160 \
   --temperature 0.0 \
   --repetition_penalty 1.15 \
@@ -103,7 +107,7 @@ python scripts/build_sft_outputs_for_risk_tuning.py \
   --adapter_dir "$SFT_ADAPTER" \
   --sft_prompt_style "$SFT_PROMPT_STYLE" \
   --input data/splits_exp295/valid_mdlm.jsonl \
-  --output outputs/refinement/sft_refiner_valid_outputs.jsonl \
+  --output outputs/refinement/sft_plain_exp295_valid_outputs.jsonl \
   --max_new_tokens 160 \
   --temperature 0.0 \
   --repetition_penalty 1.15 \
@@ -118,12 +122,14 @@ if [ ! -d "$RISK_SCORER_DIR" ]; then
   RISK_SCORER_DIR=outputs/models/span_risk_multilabel_v1/final
 fi
 
+OUT=outputs/models/gemma4_selective_sft_plain_risk_tuned_exp295_lr5e6_lambda03
+
 python scripts/train_gemma_risk_tune_from_sft.py \
   --base_model google/gemma-4-E4B-it \
   --init_adapter_dir "$SFT_ADAPTER" \
-  --train_file outputs/refinement/sft_refiner_train_outputs.jsonl \
-  --valid_file outputs/refinement/sft_refiner_valid_outputs.jsonl \
-  --output_dir outputs/models/gemma4_sft_risk_tuned_exp295_lr5e6_lambda03 \
+  --train_file outputs/refinement/sft_plain_exp295_train_outputs.jsonl \
+  --valid_file outputs/refinement/sft_plain_exp295_valid_outputs.jsonl \
+  --output_dir "$OUT" \
   --router_dir outputs/models/aspect_router_exp295_multilabel/final \
   --risk_scorer_dir "$RISK_SCORER_DIR" \
   --zt_strategy staged_risk \
@@ -137,19 +143,14 @@ python scripts/train_gemma_risk_tune_from_sft.py \
   --risk_oversample_factor 2
 ```
 
-The training script scores `sft_response`, builds `z_t_from_sft`, and writes enriched copies to:
-
-```text
-outputs/models/gemma4_sft_risk_tuned_exp295_lr5e6_lambda03/risk_tune_train_enriched.jsonl
-outputs/models/gemma4_sft_risk_tuned_exp295_lr5e6_lambda03/risk_tune_valid_enriched.jsonl
-```
+The training script scores `sft_response`, builds `z_t_from_sft`, and writes enriched copies under the risk-tuned output directory.
 
 ## 3. Selective Inference
 
 ```bash
-RISK_TUNED_ADAPTER=outputs/models/gemma4_sft_risk_tuned_exp295_lr5e6_lambda03/best
+RISK_TUNED_ADAPTER=outputs/models/gemma4_selective_sft_plain_risk_tuned_exp295_lr5e6_lambda03/best
 if [ ! -d "$RISK_TUNED_ADAPTER" ]; then
-  RISK_TUNED_ADAPTER=outputs/models/gemma4_sft_risk_tuned_exp295_lr5e6_lambda03/final
+  RISK_TUNED_ADAPTER=outputs/models/gemma4_selective_sft_plain_risk_tuned_exp295_lr5e6_lambda03/final
 fi
 
 python scripts/run_gemma_selective_risk_refinement.py \
@@ -160,7 +161,7 @@ python scripts/run_gemma_selective_risk_refinement.py \
   --router_dir outputs/models/aspect_router_exp295_multilabel/final \
   --risk_scorer_dir "$RISK_SCORER_DIR" \
   --input data/splits_exp295/valid_mdlm.jsonl \
-  --output outputs/refinement/selective_sft_risk_tuned_exp295_valid.jsonl \
+  --output outputs/refinement/selective_sft_plain_risk_tuned_exp295_valid_gate035.jsonl \
   --zt_strategy staged_risk \
   --max_new_tokens 160 \
   --temperature 0.0 \
@@ -195,7 +196,7 @@ Each output row includes:
 python - <<'PY'
 import json, collections, statistics
 
-p = "outputs/refinement/selective_sft_risk_tuned_exp295_valid.jsonl"
+p = "outputs/refinement/selective_sft_plain_risk_tuned_exp295_valid_gate035.jsonl"
 rows = [json.loads(l) for l in open(p, encoding="utf-8") if l.strip()]
 
 print("rows", len(rows))

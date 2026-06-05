@@ -121,9 +121,9 @@ def main():
     ap.add_argument("--sft_response_field", default="sft_response")
     ap.add_argument(
         "--sft_prompt_style",
-        choices=["sft_plain", "professor"],
+        choices=["sft_plain"],
         default="sft_plain",
-        help="Prompt style used by the first-stage SFT adapter when generating SFT responses.",
+        help="Prompt style used by the first-stage SFT adapter.",
     )
     ap.add_argument("--zt_strategy", choices=["threshold", "staged", "staged_risk", "risk_tag"], default="staged_risk")
     ap.add_argument("--T", type=int, default=4)
@@ -188,7 +188,7 @@ def main():
             sft_raw, sft_response = generate_response(
                 model,
                 tokenizer,
-                build_sft_prompt(tokenizer, row, prompt_style=args.sft_prompt_style),
+                build_sft_prompt(tokenizer, row),
                 max_source_len=args.max_source_len,
                 max_new_tokens=args.max_new_tokens,
                 temperature=args.temperature,

@@ -49,7 +49,7 @@ def main():
     ap.add_argument("--no_repeat_ngram_size", type=int, default=4)
     ap.add_argument(
         "--sft_prompt_style",
-        choices=["sft_plain", "professor"],
+        choices=["sft_plain"],
         default="sft_plain",
         help="Prompt style used by the first-stage SFT adapter.",
     )
@@ -76,7 +76,7 @@ def main():
     outs = []
     for ex in tqdm(rows):
         row = canonical_example(ex)
-        prompt = build_sft_prompt(tokenizer, row, prompt_style=args.sft_prompt_style)
+        prompt = build_sft_prompt(tokenizer, row)
         raw, cleaned = generate_response(
             model,
             tokenizer,

@@ -1,5 +1,7 @@
 # Exp295 Fair Baselines
 
+Status: support note for baselines, not the current method document.
+
 This note gives copy-paste commands for the fair exp295 table baselines.
 
 Definitions:

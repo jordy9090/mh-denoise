@@ -110,17 +110,6 @@ def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
 
-def sanitize_draft(text: str) -> str:
-    text = str(text or "")
-    for marker in MASK_MARKERS:
-        text = text.replace(marker, " ")
-    text = re.sub(r"\s+", " ", text).strip()
-    text = re.sub(r"\s+([.,!?;:])", r"\1", text)
-    if not text:
-        return "No usable partial draft is available. Rewrite from the question and unsafe response."
-    return text
-
-
 def cleanup_response(text: str) -> str:
     text = str(text or "")
     text = text.split("<eos>")[0]
@@ -176,47 +165,6 @@ def build_sft_user_content(ex: Dict) -> str:
     )
 
 
-def format_aspect_signal(ex: Dict) -> str:
-    g = ex.get("g")
-    if isinstance(g, list) and len(g) == len(DIMS):
-        pairs = sorted(zip(DIMS, g), key=lambda x: float(x[1]), reverse=True)
-        active = [f"{name}={float(score):.2f}" for name, score in pairs if float(score) >= 0.10]
-        return ", ".join(active[:4]) if active else f"{pairs[0][0]}={float(pairs[0][1]):.2f}"
-
-    for key in ["target_dimension", "condition_dim", "used_dimension", "predicted_dimension", "dimension"]:
-        value = ex.get(key)
-        if value:
-            return str(value)
-    return "unspecified"
-
-
-def build_professor_sft_user_content(ex: Dict) -> str:
-    q = clean_text(get_field(ex, "question", "query", "user_question"))
-    u = clean_text(get_field(ex, "unsafe_response", "corrupted_response", "bad_response"))
-    z = sanitize_draft(get_field(ex, "z_t", "draft", "masked_unsafe_draft", default=""))
-    aspect = format_aspect_signal(ex)
-    t = ex.get("t", ex.get("corruption_level", ""))
-    T = ex.get("T", "")
-    t_str = f"{t}/{T}" if str(t) and str(T) else str(t)
-
-    return (
-        "Rewrite the unsafe counseling response into a safe final response.\n"
-        "Use the question, the unsafe response, the aspect signal, and the corrupted draft.\n"
-        "Return only the final response. Do not include section labels, analysis, metadata, or the draft.\n\n"
-        f"Question:\n{q}\n\n"
-        f"Unsafe response:\n{u}\n\n"
-        f"Aspect signal:\n{aspect}\n\n"
-        f"Corruption strength:\n{t_str}\n\n"
-        f"Risk-deleted draft z_t:\n{z}\n\n"
-        "Safety requirements:\n"
-        "- Validate the user's feelings without blaming or shaming them.\n"
-        "- Do not diagnose the user or state that they have a disorder.\n"
-        "- Do not give direct medication or treatment instructions.\n"
-        "- Give concrete, bounded next steps when appropriate.\n"
-        "- Encourage professional or trusted support for serious or persistent distress."
-    )
-
-
 def apply_chat_prompt(tokenizer, user_content: str, system: Optional[str] = None) -> str:
     system = system or (
         "You are a careful mental-health response refiner. "
@@ -232,14 +180,8 @@ def apply_chat_prompt(tokenizer, user_content: str, system: Optional[str] = None
     return f"System: {system}\n\nUser: {user_content}\n\nAssistant:"
 
 
-def build_sft_prompt(tokenizer, ex: Dict, prompt_style: str = "sft_plain") -> str:
-    if prompt_style == "professor":
-        user_content = build_professor_sft_user_content(ex)
-    elif prompt_style == "sft_plain":
-        user_content = build_sft_user_content(ex)
-    else:
-        raise ValueError(f"Unsupported SFT prompt style: {prompt_style}")
-    return apply_chat_prompt(tokenizer, user_content)
+def build_sft_prompt(tokenizer, ex: Dict) -> str:
+    return apply_chat_prompt(tokenizer, build_sft_user_content(ex))
 
 
 def format_g(g: Sequence[float]) -> str:
