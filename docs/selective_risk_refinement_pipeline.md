@@ -25,23 +25,53 @@ The important design choice is that `z_t_from_sft` is constructed from the SFT r
 - `scripts/run_gemma_selective_risk_refinement.py`: runs the selective SFT-first cascade with accept/reject rules.
 - `scripts/selective_risk_refinement_utils.py`: shared prompt, scoring, corruption, and selection utilities.
 
-## 0. Train Or Reuse The SFT Refiner
+## 0. Choose The SFT Refiner Anchor
 
-If an SFT plain adapter already exists, reuse it. Otherwise train it with the existing SFT path:
+There are two valid anchors, but they answer different experimental questions.
+
+- Existing stable anchor: `outputs/models/professor_peft_refiner_textonly_main/final`. This is a text-decoder-only PEFT SFT refiner, usually trained with the professor-style prompt (`question`, `unsafe_response`, `g`, `z_t`, `t`). Use `--sft_prompt_style professor` with this adapter.
+- Clean fair anchor: `outputs/models/gemma4_peft_sft_plain_exp295/final`. This is the q+u-only SFT baseline on the exp295 split. Use `--sft_prompt_style sft_plain` with this adapter.
+
+For a fast fallback experiment, reuse the existing stable anchor:
 
 ```bash
-python scripts/train_professor_peft_refiner.py \
-  --model google/gemma-4-E4B-it \
+SFT_ADAPTER=outputs/models/professor_peft_refiner_textonly_main/final
+SFT_PROMPT_STYLE=professor
+```
+
+For a clean main-table comparison, train the fair exp295 SFT anchor:
+
+```bash
+OUT=outputs/models/gemma4_peft_sft_plain_exp295
+LOG=outputs/logs/train_gemma4_peft_sft_plain_exp295.log
+
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+nohup python -u scripts/train_professor_peft_refiner_textonly.py \
   --train_file data/splits_exp295/train_mdlm.jsonl \
   --valid_file data/splits_exp295/valid_mdlm.jsonl \
-  --output_dir outputs/models/gemma4_peft_sft_plain_exp295 \
+  --output_dir "$OUT" \
+  --model google/gemma-4-E4B-it \
   --prompt_style sft_plain \
-  --lr 5e-5 \
   --epochs 3 \
+  --lr 5e-5 \
+  --lora_r 8 \
+  --lora_alpha 16 \
   --batch_size 1 \
-  --grad_accum 8 \
-  --max_source_len 896 \
-  --max_target_len 220
+  --eval_batch_size 1 \
+  --grad_accum 16 \
+  --target_modules q_proj,k_proj,v_proj,o_proj \
+  --max_source_len 512 \
+  --max_target_len 160 \
+  --eval_steps 25 \
+  --save_steps 100 \
+  > "$LOG" 2>&1 &
+```
+
+Then use:
+
+```bash
+SFT_ADAPTER=outputs/models/gemma4_peft_sft_plain_exp295/final
+SFT_PROMPT_STYLE=sft_plain
 ```
 
 ## 1. Build SFT Outputs
@@ -50,14 +80,17 @@ python scripts/train_professor_peft_refiner.py \
 cd ~/mh-denoise
 conda activate mh-denoise
 
-SFT_ADAPTER=outputs/models/gemma4_peft_sft_plain_exp295/best
-if [ ! -d "$SFT_ADAPTER" ]; then
+if [ -z "${SFT_ADAPTER:-}" ]; then
   SFT_ADAPTER=outputs/models/gemma4_peft_sft_plain_exp295/final
+fi
+if [ -z "${SFT_PROMPT_STYLE:-}" ]; then
+  SFT_PROMPT_STYLE=sft_plain
 fi
 
 python scripts/build_sft_outputs_for_risk_tuning.py \
   --base_model google/gemma-4-E4B-it \
   --adapter_dir "$SFT_ADAPTER" \
+  --sft_prompt_style "$SFT_PROMPT_STYLE" \
   --input data/splits_exp295/train_mdlm.jsonl \
   --output outputs/refinement/sft_refiner_train_outputs.jsonl \
   --max_new_tokens 160 \
@@ -68,6 +101,7 @@ python scripts/build_sft_outputs_for_risk_tuning.py \
 python scripts/build_sft_outputs_for_risk_tuning.py \
   --base_model google/gemma-4-E4B-it \
   --adapter_dir "$SFT_ADAPTER" \
+  --sft_prompt_style "$SFT_PROMPT_STYLE" \
   --input data/splits_exp295/valid_mdlm.jsonl \
   --output outputs/refinement/sft_refiner_valid_outputs.jsonl \
   --max_new_tokens 160 \
@@ -122,6 +156,7 @@ python scripts/run_gemma_selective_risk_refinement.py \
   --base_model google/gemma-4-E4B-it \
   --sft_adapter_dir "$SFT_ADAPTER" \
   --risk_adapter_dir "$RISK_TUNED_ADAPTER" \
+  --sft_prompt_style "$SFT_PROMPT_STYLE" \
   --router_dir outputs/models/aspect_router_exp295_multilabel/final \
   --risk_scorer_dir "$RISK_SCORER_DIR" \
   --input data/splits_exp295/valid_mdlm.jsonl \

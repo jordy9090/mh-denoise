@@ -47,6 +47,12 @@ def main():
     ap.add_argument("--temperature", type=float, default=0.0)
     ap.add_argument("--repetition_penalty", type=float, default=1.15)
     ap.add_argument("--no_repeat_ngram_size", type=int, default=4)
+    ap.add_argument(
+        "--sft_prompt_style",
+        choices=["sft_plain", "professor"],
+        default="sft_plain",
+        help="Prompt style used by the first-stage SFT adapter.",
+    )
     ap.add_argument("--no_4bit", action="store_true")
     args = ap.parse_args()
 
@@ -57,6 +63,7 @@ def main():
 
     use_4bit = torch.cuda.is_available() and not args.no_4bit
     print("adapter_dir:", args.adapter_dir)
+    print("sft_prompt_style:", args.sft_prompt_style)
     print("load_in_4bit:", use_4bit)
     base = load_base_model(args.base_model, use_4bit)
     model = PeftModel.from_pretrained(base, args.adapter_dir)
@@ -69,7 +76,7 @@ def main():
     outs = []
     for ex in tqdm(rows):
         row = canonical_example(ex)
-        prompt = build_sft_prompt(tokenizer, row)
+        prompt = build_sft_prompt(tokenizer, row, prompt_style=args.sft_prompt_style)
         raw, cleaned = generate_response(
             model,
             tokenizer,
@@ -83,6 +90,7 @@ def main():
         out = dict(row)
         out["sft_response_raw"] = raw
         out["sft_response"] = cleaned
+        out["sft_prompt_style"] = args.sft_prompt_style
         out["method"] = "sft_refiner_output_for_risk_tuning"
         outs.append(out)
 

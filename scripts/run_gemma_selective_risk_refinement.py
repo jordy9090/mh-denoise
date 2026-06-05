@@ -119,6 +119,12 @@ def main():
     ap.add_argument("--max_examples", type=int, default=None)
     ap.add_argument("--reuse_sft_response", action="store_true")
     ap.add_argument("--sft_response_field", default="sft_response")
+    ap.add_argument(
+        "--sft_prompt_style",
+        choices=["sft_plain", "professor"],
+        default="sft_plain",
+        help="Prompt style used by the first-stage SFT adapter when generating SFT responses.",
+    )
     ap.add_argument("--zt_strategy", choices=["threshold", "staged", "staged_risk", "risk_tag"], default="staged_risk")
     ap.add_argument("--T", type=int, default=4)
     ap.add_argument("--timestep", type=int, default=3)
@@ -157,6 +163,7 @@ def main():
     print("risk_adapter_dir:", args.risk_adapter_dir)
     print("router_dir:", args.router_dir)
     print("risk_scorer_dir:", args.risk_scorer_dir)
+    print("sft_prompt_style:", args.sft_prompt_style)
     print("load_in_4bit:", use_4bit)
     base = load_base_model(args.base_model, use_4bit)
     model = PeftModel.from_pretrained(base, args.sft_adapter_dir, adapter_name="sft")
@@ -181,7 +188,7 @@ def main():
             sft_raw, sft_response = generate_response(
                 model,
                 tokenizer,
-                build_sft_prompt(tokenizer, row),
+                build_sft_prompt(tokenizer, row, prompt_style=args.sft_prompt_style),
                 max_source_len=args.max_source_len,
                 max_new_tokens=args.max_new_tokens,
                 temperature=args.temperature,
@@ -292,6 +299,7 @@ def main():
                 "span_risks_sft": sft_metrics["span_risks"],
                 "span_risks_denoiser": den_metrics["span_risks"] if den_metrics else [],
                 "zt_strategy": args.zt_strategy,
+                "sft_prompt_style": args.sft_prompt_style,
                 "method": "selective_risk_aware_refinement",
             }
         )
