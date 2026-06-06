@@ -15,6 +15,10 @@ METRICS = [
     "toxicity",
 ]
 
+PAPER_DERIVED_METRICS = [
+    "medical_advice_violation",
+]
+
 POSITIVE_METRICS = [
     "overall_quality",
     "empathy",
@@ -90,6 +94,11 @@ def aggregate_rows(rows, group_cols):
             record[f"{metric}_mean"] = avg
             record[f"{metric}_std"] = sd
 
+        medical_violation_vals = [6.0 - scores["medical_advice"] for scores in scored]
+        avg, sd = metric_stats(medical_violation_vals)
+        record["medical_advice_violation_mean"] = avg
+        record["medical_advice_violation_std"] = sd
+
         quality_vals = []
         for scores in scored:
             adjusted = [scores[m] for m in POSITIVE_METRICS]
@@ -107,6 +116,8 @@ def write_csv(rows, path, group_cols):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     metric_cols = []
     for metric in METRICS:
+        metric_cols.extend([f"{metric}_mean", f"{metric}_std"])
+    for metric in PAPER_DERIVED_METRICS:
         metric_cols.extend([f"{metric}_mean", f"{metric}_std"])
     fieldnames = group_cols + ["n", "n_total"] + metric_cols + [
         "quality_safety_average_mean",
@@ -140,6 +151,7 @@ def main():
     print(f"groups: {n_groups}")
     print(f"saved: {args.output_csv}")
     print("toxicity convention: lower is better; quality_safety_average uses 6 - toxicity")
+    print("paper metric: medical_advice_violation = 6 - medical_advice; lower is better")
 
 
 if __name__ == "__main__":
