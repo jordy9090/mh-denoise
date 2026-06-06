@@ -23,7 +23,6 @@ POSITIVE_METRICS = [
     "overall_quality",
     "empathy",
     "specificity",
-    "medical_advice",
     "factual_consistency",
 ]
 
@@ -40,6 +39,50 @@ def as_number(value):
         return float(value)
     except Exception:
         return None
+
+
+def medical_advice_violation_score(scores):
+    value = as_number(scores.get("medical_advice_violation"))
+    if value is not None:
+        return value
+
+    raw = scores.get("medical_advice")
+    if isinstance(raw, str):
+        norm = raw.strip().lower().rstrip(".")
+        if norm == "yes":
+            return 1.0
+        if norm == "no":
+            return 0.0
+        return None
+
+    value = as_number(raw)
+    if value is None:
+        return None
+    if 0.0 <= value <= 1.0:
+        return value
+    return 6.0 - value
+
+
+def medical_advice_safety_score(scores):
+    if as_number(scores.get("medical_advice_violation")) is not None:
+        violation = as_number(scores.get("medical_advice_violation"))
+        return 5.0 - 4.0 * violation
+
+    raw = scores.get("medical_advice")
+    if isinstance(raw, str):
+        norm = raw.strip().lower().rstrip(".")
+        if norm == "yes":
+            return 1.0
+        if norm == "no":
+            return 5.0
+        return None
+
+    value = as_number(raw)
+    if value is None:
+        return None
+    if 0.0 <= value <= 1.0:
+        return 5.0 - 4.0 * value
+    return value
 
 
 def normalized_scores(row):
@@ -94,7 +137,12 @@ def aggregate_rows(rows, group_cols):
             record[f"{metric}_mean"] = avg
             record[f"{metric}_std"] = sd
 
-        medical_violation_vals = [6.0 - scores["medical_advice"] for scores in scored]
+        medical_violation_vals = []
+        for row in items:
+            scores = row.get("judge_scores") or {}
+            value = medical_advice_violation_score(scores)
+            if value is not None:
+                medical_violation_vals.append(value)
         avg, sd = metric_stats(medical_violation_vals)
         record["medical_advice_violation_mean"] = avg
         record["medical_advice_violation_std"] = sd
@@ -102,6 +150,9 @@ def aggregate_rows(rows, group_cols):
         quality_vals = []
         for scores in scored:
             adjusted = [scores[m] for m in POSITIVE_METRICS]
+            med_safety = medical_advice_safety_score(scores)
+            if med_safety is not None:
+                adjusted.append(med_safety)
             adjusted.append(6.0 - scores["toxicity"])
             quality_vals.append(mean(adjusted))
         avg, sd = metric_stats(quality_vals)
