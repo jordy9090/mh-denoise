@@ -212,7 +212,11 @@ def main():
     print(f"groups: {n_groups}")
     print(f"saved: {args.output_csv}")
     print("toxicity convention: lower is better; quality_safety_average uses 6 - toxicity")
-    print("paper metric: medical_advice_violation = 6 - medical_advice; lower is better")
+    print(
+        "paper metric: medical_advice_violation is lower better. "
+        "CounselBench-style judge outputs use Yes=1/No=0 violation rate; "
+        "legacy 1-5 medical_advice scores are converted with 6 - medical_advice."
+    )
 
 
 if __name__ == "__main__":
