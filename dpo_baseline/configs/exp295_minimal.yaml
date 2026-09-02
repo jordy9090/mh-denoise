@@ -1,0 +1,93 @@
+experiment:
+  name: exp295_dpo_minimal
+  pair_regime: minimal
+  beta_sweep: [0.03, 0.10, 0.30]
+  screening_seed: 42
+  selected_beta: null
+  final_seeds: [42, 43, 44]
+
+# These source paths are the frozen exp295 split documented in the existing pipeline.
+data:
+  source_train: data/splits_exp295/train_mdlm.jsonl
+  source_valid: data/splits_exp295/valid_mdlm.jsonl
+  source_test: data/splits_exp295/test.jsonl
+  train_pairs: dpo_baseline/data/exp295_minimal/train.jsonl
+  valid_pairs: dpo_baseline/data/exp295_minimal/valid.jsonl
+  expected_train_pairs: 1242
+  expected_valid_pairs: 174
+  expected_train_questions: 207
+  expected_valid_questions: 29
+  expected_test_rows: 354
+  expected_test_questions: 59
+
+model:
+  base_model: google/gemma-4-E4B-it
+  # Supply the exact checkpoint used for the SFT comparison row through
+  # --sft_adapter_dir. The DPO policy and frozen reference are cloned from it.
+  sft_adapter_dir: null
+  trust_remote_code: true
+  # The repository's direct SFT script currently uses these settings.
+  # Change them only when adapter_config.json proves that the reported SFT
+  # checkpoint used a different architecture.
+  expected_lora_r: 16
+  expected_lora_alpha: 32
+  expected_target_module_tokens: [linear]
+
+training:
+  output_dir: outputs/dpo_exp295/minimal/manual
+  sweep_root: outputs/dpo_exp295
+  beta: 0.10
+  loss_type: [sigmoid]
+  learning_rate: 1.0e-5
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 16
+  # 1242 pairs / 16 accumulation = 78 updates per pass; 3 passes = 234.
+  # The same max_steps is used for minimal and K=4 hard-pair DPO.
+  max_steps: 234
+  num_train_epochs: 3.0
+  max_source_len: 512
+  max_target_len: 160
+  max_length: 672
+  lr_scheduler_type: linear
+  warmup_ratio: 0.06
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  optim: adamw_torch
+  gradient_checkpointing: true
+  disable_dropout: true
+  precompute_ref_log_probs: true
+  precompute_ref_batch_size: 1
+  tf32: true
+  eval_steps: 25
+  save_steps: 100
+  save_total_limit: 2
+  logging_steps: 5
+  dataloader_num_workers: 2
+  seed: 42
+  data_seed: 42
+  full_determinism: false
+
+inference:
+  max_source_len: 512
+  max_new_tokens: 120
+  temperature: 0.0
+  top_p: 1.0
+  repetition_penalty: 1.15
+  no_repeat_ngram_size: 4
+
+selective_denoiser:
+  router_dir: outputs/models/router_multilabel_v1/best
+  risk_scorer_dir: outputs/models/span_risk_multilabel_v1/best
+  denoiser_adapter_dir: outputs/models/gemma4_peft_langqkvo_infermatch_exp295_main/best
+  T: 4
+  t: 4
+  rho: 0.15
+  lambda_mask: 0.75
+  mask_risk_threshold: 0.35
+  mask_probability_threshold: 0.35
+  gate_global_threshold: 0.50
+  gate_medical_threshold: 0.35
+  risk_tolerance: 0.0
+  medical_risk_tolerance: 0.0
+  specificity_ratio: 0.85
