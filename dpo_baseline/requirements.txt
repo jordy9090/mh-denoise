@@ -1,7 +1,0 @@
-# Install the CUDA-matched PyTorch build for the server before this file.
-trl[peft,quantization]==1.12.0
-peft==0.20.0
-bitsandbytes>=0.48.1,<0.50
-PyYAML>=6.0,<7
-tqdm>=4.66,<5
-packaging>=24,<26
