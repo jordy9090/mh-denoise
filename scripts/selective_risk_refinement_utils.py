@@ -6,8 +6,14 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import torch
 
+from fullpaper_risk_contract import (
+    AXES as FULLPAPER_DIMS,
+    router_input_text as fullpaper_router_input_text,
+    scorer_input_text as fullpaper_scorer_input_text,
+)
 
-DIMS = [
+
+LEGACY_DIMS = [
     "overall_quality",
     "empathy",
     "specificity",
@@ -15,6 +21,18 @@ DIMS = [
     "factual_consistency",
     "toxicity",
 ]
+DIMS = list(LEGACY_DIMS)
+RISK_CONTRACT = "legacy"
+
+
+def configure_risk_contract(name: str) -> List[str]:
+    """Switch shared labels/text without changing legacy-default behavior."""
+    global RISK_CONTRACT
+    if name not in {"legacy", "fullpaper_v1"}:
+        raise ValueError(f"Unsupported risk contract: {name}")
+    RISK_CONTRACT = name
+    DIMS[:] = list(FULLPAPER_DIMS if name == "fullpaper_v1" else LEGACY_DIMS)
+    return DIMS
 
 MASK_MARKERS = ["<MASK>", "[MASK]", "[needs revision]", "[NEEDS REVISION]"]
 
@@ -176,7 +194,21 @@ def apply_chat_prompt(tokenizer, user_content: str, system: Optional[str] = None
         {"role": "user", "content": user_content},
     ]
     if getattr(tokenizer, "chat_template", None):
-        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        try:
+            return tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
+        except TypeError as exc:
+            if "enable_thinking" not in str(exc):
+                raise
+            return tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
     return f"System: {system}\n\nUser: {user_content}\n\nAssistant:"
 
 
@@ -232,6 +264,8 @@ def split_sentences(text: str) -> List[str]:
 
 
 def router_text(q: str, response: str) -> str:
+    if RISK_CONTRACT == "fullpaper_v1":
+        return fullpaper_router_input_text(q, response)
     return (
         "Question:\n"
         + q.strip()
@@ -242,6 +276,8 @@ def router_text(q: str, response: str) -> str:
 
 
 def risk_text(q: str, span: str) -> str:
+    if RISK_CONTRACT == "fullpaper_v1":
+        return fullpaper_scorer_input_text(q, span)
     return (
         "Question:\n"
         + q.strip()
