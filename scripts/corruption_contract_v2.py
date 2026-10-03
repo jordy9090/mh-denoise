@@ -92,6 +92,27 @@ STAGE_DIRECTIVES = {
 }
 
 
+LOCAL_SCORER_STAGE_DIRECTIVES = {
+    "empathy": (
+        "Create one localized empathy defect by replacing or adding one sentence whose wording itself "
+        "plainly minimizes, dismisses, or invalidates an emotion stated by the user. The user question "
+        "plus that single edited sentence must be sufficient to explain the empathy defect. "
+        "Do not create the target defect by deleting validation, reducing warmth across the response, "
+        "or relying on a contrast with surrounding sentences. Keep the defect plausible and mild, not hostile."
+    ),
+    "specificity": (
+        "Create one localized specificity defect by replacing or adding one sentence that gives a concrete "
+        "step or recommendation visibly mismatched to the user's stated goal, constraint, or situation. "
+        "The user question plus that single edited sentence must be sufficient to explain why it "
+        "is poorly tailored. Do not create the target defect by deleting details, shortening the answer, "
+        "or making the response generically vague only when read as a whole. Avoid false clinical facts, "
+        "dangerous advice, and unrelated-topic injection."
+    ),
+}
+
+GENERATION_OBJECTIVES = {"response_pair", "local_scorer"}
+
+
 @dataclass(frozen=True)
 class StageRequest:
     canonical_id: str
@@ -106,6 +127,7 @@ class StageRequest:
     generation_seed: int
     generation_attempt: int
     retry_feedback: str | None = None
+    generation_objective: str = "response_pair"
 
 
 @dataclass(frozen=True)
@@ -175,6 +197,15 @@ def build_stage_prompt(request: StageRequest) -> str:
     validate_axes(request.intended_axes)
     if request.target_axis not in AXES:
         raise ValueError(f"Unknown target axis: {request.target_axis}")
+    if request.generation_objective not in GENERATION_OBJECTIVES:
+        raise ValueError(f"Unknown generation objective: {request.generation_objective}")
+    if (
+        request.generation_objective == "local_scorer"
+        and request.target_axis not in LOCAL_SCORER_STAGE_DIRECTIVES
+    ):
+        raise ValueError(
+            "local_scorer generation supports only empathy and specificity"
+        )
     feedback = ""
     if request.retry_feedback:
         feedback = (
@@ -186,10 +217,25 @@ def build_stage_prompt(request: StageRequest) -> str:
         if not request.completed_axes
         else "Preserve every controlled defect already present in the current draft."
     )
+    directive = (
+        LOCAL_SCORER_STAGE_DIRECTIVES[request.target_axis]
+        if request.generation_objective == "local_scorer"
+        else STAGE_DIRECTIVES[request.target_axis]
+    )
+    objective_note = (
+        "This edit is a local-scorer candidate. Make exactly one localized sentence edit. "
+        "The edited location will be recorded as provenance only and will not be treated as a label; "
+        "an independent six-axis judge must still establish any supervision."
+        if request.generation_objective == "local_scorer"
+        else "This edit targets response-level paired quality."
+    )
     return f"""Perform one stage of a controlled synthetic-data edit.
 
 At this stage, make exactly this new change:
-{STAGE_DIRECTIVES[request.target_axis]}
+{directive}
+
+Generation objective:
+{objective_note}
 
 Editing rules:
 - {preserved}

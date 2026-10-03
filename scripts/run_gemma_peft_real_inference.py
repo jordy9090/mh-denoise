@@ -5,9 +5,20 @@ import torch
 from tqdm import tqdm
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification, BitsAndBytesConfig
 from peft import PeftModel
+from fullpaper_risk_contract import (
+    AXES as FULLPAPER_DIMS,
+    PROVISIONAL_RISK_THRESHOLD,
+    RISK_THRESHOLD_STATUS,
+    ROUTER_LABEL_SEMANTICS,
+    VERSION as RISK_CONTRACT_VERSION,
+    require_fullpaper_axis_order,
+    router_input_text,
+    scorer_input_text,
+)
 
 
 DIMS = ["overall_quality","empathy","specificity","medical_advice","factual_consistency","toxicity"]
+RISK_CONTRACT = "legacy"
 
 
 def read_jsonl(path):
@@ -36,6 +47,8 @@ def split_sentences(text):
 def router_text(ex):
     q = get_field(ex, "question", "query", "user_question")
     u = get_field(ex, "unsafe_response", "corrupted_response", "bad_response")
+    if RISK_CONTRACT == "fullpaper_v1":
+        return router_input_text(q, u)
     return (
         "Question:\n" + q.strip()
         + "\n\nUnsafe response:\n" + u.strip()
@@ -53,6 +66,8 @@ def predict_g(router, tok, ex, device):
 
 
 def risk_text(q, span):
+    if RISK_CONTRACT == "fullpaper_v1":
+        return scorer_input_text(q, span)
     return (
         "Question:\n" + q.strip()
         + "\n\nCandidate span:\n" + span.strip()
@@ -303,13 +318,19 @@ def main():
     ap.add_argument("--adapter_dir", required=True)
     ap.add_argument("--router_dir", required=True)
     ap.add_argument("--risk_scorer_dir", required=True)
+    ap.add_argument(
+        "--risk_contract",
+        choices=["legacy", "fullpaper_v1"],
+        default="legacy",
+        help="fullpaper_v1 shares the exact six-axis order and text construction with the new trainers; legacy preserves exp295 behavior.",
+    )
     ap.add_argument("--input", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--T", type=int, default=4)
     ap.add_argument("--modes", default="empty,unsafe_t2,unsafe_t3,unsafe_t4")
     ap.add_argument("--mask_token", default="<MASK>")
     ap.add_argument("--zt_strategy", choices=["threshold", "staged", "staged_risk", "risk_tag"], default="threshold")
-    ap.add_argument("--risk_threshold", type=float, default=0.35)
+    ap.add_argument("--risk_threshold", type=float, default=PROVISIONAL_RISK_THRESHOLD)
     ap.add_argument("--t2_frac", type=float, default=0.33)
     ap.add_argument("--t3_frac", type=float, default=0.66)
     ap.add_argument("--risk_tag_format", default="[Risk: {dim}] {span} [/Risk]")
@@ -320,6 +341,11 @@ def main():
     ap.add_argument("--no_repeat_ngram_size", type=int, default=4)
     args = ap.parse_args()
 
+    global DIMS, RISK_CONTRACT
+    RISK_CONTRACT = args.risk_contract
+    if RISK_CONTRACT == "fullpaper_v1":
+        DIMS = list(FULLPAPER_DIMS)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     router_tok = AutoTokenizer.from_pretrained(args.router_dir)
@@ -327,6 +353,9 @@ def main():
 
     risk_tok = AutoTokenizer.from_pretrained(args.risk_scorer_dir)
     risk_model = AutoModelForSequenceClassification.from_pretrained(args.risk_scorer_dir).to(device).eval()
+    if RISK_CONTRACT == "fullpaper_v1":
+        require_fullpaper_axis_order(router.config)
+        require_fullpaper_axis_order(risk_model.config)
 
     tok = AutoTokenizer.from_pretrained(args.adapter_dir, trust_remote_code=True)
     if tok.pad_token is None:
@@ -420,6 +449,14 @@ def main():
             out = dict(ex)
             out["mode"] = "empty" if source == "empty" else f"unsafe_t{t}"
             out["g"] = {DIMS[i]: float(g[i]) for i in range(len(DIMS))}
+            if RISK_CONTRACT == "fullpaper_v1":
+                out["risk_contract"] = {
+                    "version": RISK_CONTRACT_VERSION,
+                    "axis_order": list(DIMS),
+                    "router_label_semantics": ROUTER_LABEL_SEMANTICS,
+                    "risk_threshold": args.risk_threshold,
+                    "risk_threshold_status": RISK_THRESHOLD_STATUS,
+                }
             out["z_t"] = z
             out["zt_strategy"] = args.zt_strategy
             out["span_risks"] = infos

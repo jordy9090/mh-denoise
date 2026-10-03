@@ -1,4 +1,8 @@
 import argparse
+import hashlib
+import json
+import time
+from pathlib import Path
 import statistics
 
 import torch
@@ -22,7 +26,10 @@ from selective_risk_refinement_utils import (
     score_candidate,
     word_count,
     write_jsonl,
+    configure_risk_contract,
 )
+from fullpaper_risk_contract import require_fullpaper_axis_order
+from fullpaper_backbone_utils import load_fullpaper_tokenizer, load_text_generation_model
 
 
 def load_base_model(model_name: str, use_4bit: bool):
@@ -33,17 +40,16 @@ def load_base_model(model_name: str, use_4bit: bool):
             bnb_4bit_compute_dtype=torch.bfloat16,
             bnb_4bit_use_double_quant=True,
         )
-        return AutoModelForCausalLM.from_pretrained(
+        return load_text_generation_model(
             model_name,
             quantization_config=bnb,
             torch_dtype=torch.bfloat16,
             device_map="auto",
-            trust_remote_code=True,
         )
-    kwargs = {"trust_remote_code": True}
+    kwargs = {}
     if torch.cuda.is_available():
         kwargs.update({"torch_dtype": torch.bfloat16, "device_map": "auto"})
-    return AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
+    return load_text_generation_model(model_name, **kwargs)
 
 
 def load_classifier(path: str, device):
@@ -135,12 +141,14 @@ def response_metrics(q, response, score, focus_idx, sft_word_count=None):
 
 
 def main():
+    started = time.monotonic()
     ap = argparse.ArgumentParser()
     ap.add_argument("--base_model", default="google/gemma-4-E4B-it")
     ap.add_argument("--sft_adapter_dir", required=True)
     ap.add_argument("--risk_adapter_dir", required=True)
     ap.add_argument("--router_dir", required=True)
     ap.add_argument("--risk_scorer_dir", required=True)
+    ap.add_argument("--risk_contract", choices=["legacy", "fullpaper_v1"], default="legacy")
     ap.add_argument("--input", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--max_examples", type=int, default=None)
@@ -158,7 +166,7 @@ def main():
     ap.add_argument("--risk_threshold", type=float, default=0.35)
     ap.add_argument("--gate_risk_threshold", type=float, default=0.35)
     ap.add_argument("--gate_strategy", choices=["overall", "aspect_only", "aspect_or_overall"], default="overall")
-    ap.add_argument("--gate_focus_aspect", choices=DIMS, default="medical_advice")
+    ap.add_argument("--gate_focus_aspect", default=None)
     ap.add_argument("--gate_focus_threshold", type=float, default=0.15)
     ap.add_argument("--mask_threshold", type=float, default=0.35)
     ap.add_argument("--mask_token", default="<MASK>")
@@ -179,13 +187,23 @@ def main():
     ap.add_argument("--no_repeat_ngram_size", type=int, default=4)
     ap.add_argument("--no_4bit", action="store_true")
     args = ap.parse_args()
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+    configure_risk_contract(args.risk_contract)
+    if args.gate_focus_aspect is None:
+        args.gate_focus_aspect = "medical_boundary" if args.risk_contract == "fullpaper_v1" else "medical_advice"
+    if args.gate_focus_aspect not in DIMS:
+        raise ValueError(f"--gate_focus_aspect must be one of {DIMS}")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     focus_idx = DIMS.index(args.gate_focus_aspect)
     router_tok, router = load_classifier(args.router_dir, device)
     risk_tok, risk_model = load_classifier(args.risk_scorer_dir, device)
+    if args.risk_contract == "fullpaper_v1":
+        require_fullpaper_axis_order(router.config)
+        require_fullpaper_axis_order(risk_model.config)
 
-    tokenizer = AutoTokenizer.from_pretrained(args.sft_adapter_dir, trust_remote_code=True)
+    tokenizer = load_fullpaper_tokenizer(args.sft_adapter_dir)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
@@ -360,6 +378,32 @@ def main():
     used = [r for r in outs if r["used_denoiser"]]
     accepted = [r for r in outs if r["accepted_denoiser"]]
     rejected = [r for r in outs if r["used_denoiser"] and not r["accepted_denoiser"]]
+    def file_sha256(path):
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    manifest = {
+        "status": "complete_selective_risk_refinement_inference",
+        "base_model": str(Path(args.base_model).resolve()),
+        "sft_adapter_dir": str(Path(args.sft_adapter_dir).resolve()),
+        "risk_adapter_dir": str(Path(args.risk_adapter_dir).resolve()),
+        "router_dir": str(Path(args.router_dir).resolve()),
+        "risk_scorer_dir": str(Path(args.risk_scorer_dir).resolve()),
+        "input": {"path": str(Path(args.input).resolve()), "sha256": file_sha256(args.input), "rows": len(rows)},
+        "output": {"path": str(Path(args.output).resolve()), "sha256": file_sha256(args.output), "rows": len(outs)},
+        "settings": vars(args),
+        "denoiser_called": len(used),
+        "denoiser_accepted": len(accepted),
+        "runtime_seconds": time.monotonic() - started,
+        "peak_allocated_cuda_bytes": torch.cuda.max_memory_allocated() if torch.cuda.is_available() else 0,
+        "source_span_offsets_transferred_to_sft_output": False,
+    }
+    Path(args.output).with_suffix(".manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     print("saved to", args.output)
     print("total examples:", len(outs))
     print("denoiser called:", len(used))

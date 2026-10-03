@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import difflib
 import fcntl
 import hashlib
 import json
@@ -34,10 +35,11 @@ from build_development_corruption_shard import (
     candidate_a,
     editing_meta,
 )
-from corruption_contract_v2 import StageRequest, parse_json_object
+from corruption_contract_v2 import AXES, StageRequest, parse_json_object
 from fullpaper_acl_pipeline import DEFAULT_OUTPUT_DIR, read_jsonl, sha256_file, write_json, write_jsonl
 from run_paired_generator_diagnostic import (
     DEFAULT_REQUIRED_FREE_VRAM_MIB,
+    ELIGIBILITY_PROMPT,
     ExternalJudge,
     GENERATORS,
     JUDGE_MODEL,
@@ -50,7 +52,22 @@ from source_integrity_contract import VERSION as SOURCE_INTEGRITY_VERSION
 from source_integrity_contract import contract_hash, exact_offset
 
 
-LOCAL_JUDGE_VERSION = "local-qwen35-27b-paired-qc-v4-20260923"
+LOCAL_JUDGE_VERSION = "local-qwen35-27b-paired-qc-v6-20260926"
+
+CLEAN_PREFLIGHT_RETRY_INSTRUCTION = """
+
+Your previous clean-target JSON failed validation.
+Validation error: {validation_error}
+
+Return the complete JSON object again. Evidence from the question or response
+must be one contiguous exact verbatim substring; do not paraphrase, normalize
+whitespace, join passages, or use ellipses. Use whole_response with an empty
+span only for a genuinely holistic judgment. Keep every required key and
+return JSON only.
+
+Previous output for correction:
+<<<PREVIOUS_JSON>>>{previous_output}<<<END_PREVIOUS_JSON>>>
+"""
 
 
 VERSION = "fullpaper-corruption-production-v1"
@@ -192,6 +209,32 @@ def selection_hash(rows: list[dict[str, Any]]) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def text_edit_trace(before: str, after: str) -> dict[str, Any]:
+    """Record exact changed locations as provenance without inferring labels."""
+    hunks = []
+    for tag, before_start, before_end, after_start, after_end in difflib.SequenceMatcher(
+        None, before, after, autojunk=False
+    ).get_opcodes():
+        if tag == "equal":
+            continue
+        hunks.append({
+            "operation": tag,
+            "before_start": before_start,
+            "before_end": before_end,
+            "before_text": before[before_start:before_end],
+            "after_start": after_start,
+            "after_end": after_end,
+            "after_text": after[after_start:after_end],
+        })
+    return {
+        "before_sha256": hashlib.sha256(before.encode("utf-8")).hexdigest(),
+        "after_sha256": hashlib.sha256(after.encode("utf-8")).hexdigest(),
+        "changed_hunks": hunks,
+        "changed_hunk_count": len(hunks),
+        "label_status": "provenance_only_not_ground_truth",
+    }
+
+
 def load_selection(
     path: Path,
     max_inputs: int,
@@ -241,6 +284,15 @@ def load_selection(
         }
         if len(set(axes)) != len(axes) or not set(axes) <= allowed:
             raise ValueError(f"Selection row has invalid axes: {canonical_id}: {axes}")
+        generation_objective = str(spec.get("generation_objective") or "response_pair")
+        if generation_objective not in {"response_pair", "local_scorer"}:
+            raise ValueError(
+                f"Selection row has invalid generation objective: {canonical_id}: {generation_objective}"
+            )
+        if generation_objective == "local_scorer" and set(axes) - {"empathy", "specificity"}:
+            raise ValueError(
+                f"local_scorer selection supports only empathy/specificity: {canonical_id}: {axes}"
+            )
         seen.add(canonical_id)
         seen_questions.add(question_group)
         selected.append(
@@ -251,6 +303,7 @@ def load_selection(
                 "intended_axes": axes,
                 "axis_count": len(axes),
                 "generation_seeds": spec.get("generation_seeds", []),
+                "generation_objective": generation_objective,
                 "split": split,
             }
         )
@@ -266,14 +319,17 @@ def load_selection(
 
 
 def export(output: Path, results: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
+    from fullpaper_scorer_export_contract import (
+        VERSION as SCORER_EXPORT_CONTRACT_VERSION,
+        assert_no_non_null_collisions,
+        find_non_null_collisions,
+        mask_collisions,
+    )
+
     accepted = [row for row in results if row["status"] == "accepted"]
     conflicts = [row for row in results if row["status"] == "qc_conflict"]
     holds = [row for row in results if row["status"] == "qc_hold"]
     rejected = [row for row in results if row["status"] not in ("accepted", "qc_conflict", "qc_hold")]
-    write_jsonl(output / "accepted.jsonl", accepted)
-    write_jsonl(output / "rejected.jsonl", rejected)
-    write_jsonl(output / "qc_conflicts.jsonl", conflicts)
-    write_jsonl(output / "qc_holds.jsonl", holds)
     sft_by_split: dict[str, list[dict[str, Any]]] = {"train": [], "valid": []}
     dpo_by_split: dict[str, list[dict[str, Any]]] = {"train": [], "valid": []}
     all_spans: list[dict[str, Any]] = []
@@ -286,7 +342,9 @@ def export(output: Path, results: list[dict[str, Any]], manifest: dict[str, Any]
             for key in (
                 "canonical_id", "source", "source_component", "intended_axes", "realized_axes",
                 "unintended_axes", "axis_count", "judge_model", "generator_repo", "generator_revision",
+                "generation_objective",
             )
+            if key in row
         }
         metadata.update(
             {
@@ -299,7 +357,8 @@ def export(output: Path, results: list[dict[str, Any]], manifest: dict[str, Any]
             key: row["final_grade"][key]
             for key in (
                 "clean_scores", "candidate_scores", "deltas", "content_checks", "invalid_evidence",
-                "clean_target_eligibility",
+                "clean_target_eligibility", "candidate_target_eligibility",
+                "response_eligibility", "response_content_checks",
             )
             if key in row["final_grade"]
         }
@@ -328,13 +387,51 @@ def export(output: Path, results: list[dict[str, Any]], manifest: dict[str, Any]
         )
         sft_by_split[row["split"]].append({"input": model_input, "target": row["clean_response"], "metadata": metadata})
         dpo_by_split[row["split"]].append({"input": model_input, "chosen": row["clean_response"], "rejected": row["corrupted_response"], "metadata": metadata})
-    for split in ("train", "valid"):
-        write_jsonl(output / f"{split}_sft.jsonl", sft_by_split[split])
-        write_jsonl(output / f"{split}_dpo.jsonl", dpo_by_split[split])
-    write_jsonl(output / "source_verified_spans.jsonl", all_spans)
-    write_jsonl(output / "excluded_unverified_evidence.jsonl", excluded_spans)
-    write_jsonl(output / "response_level_qc_evidence.jsonl", response_level_evidence)
-    local_label_counts = Counter(span["label"] for span in all_spans)
+
+    question_by_id = {row["canonical_id"]: row["question"] for row in accepted}
+    scorer_rows = []
+    for span in all_spans:
+        axis = span["axis"]
+        scorer_rows.append({
+            "canonical_id": span["canonical_id"],
+            "question": question_by_id[span["canonical_id"]],
+            "span": span["text"],
+            "span_side": span.get("side"),
+            "span_start": span.get("start"),
+            "span_end": span.get("end"),
+            "split": next(row["split"] for row in accepted if row["canonical_id"] == span["canonical_id"]),
+            "labels": {name: (span.get("label") if name == axis else None) for name in AXES},
+            "label_mask": {name: span.get("label") in (0, 1) and name == axis for name in AXES},
+            "label_basis": {name: (f"explicit_{span.get('scope')}_exact_span" if name == axis else "unknown") for name in AXES},
+            "source_records": [span],
+        })
+    original_collisions = find_non_null_collisions(scorer_rows)
+    scorer_conflict_ledger = mask_collisions(
+        scorer_rows, original_collisions, stage="production_string_input"
+    )
+    for scorer_row, span in zip(scorer_rows, all_spans, strict=True):
+        axis = span["axis"]
+        if scorer_row["labels"][axis] is None and span.get("label") in (0, 1):
+            span["original_label"] = span["label"]
+            span["label"] = None
+            span["label_mask"] = False
+            span["mask_reason"] = "same_scorer_input_axis_opposite_labels"
+    assert_no_non_null_collisions(scorer_rows)
+    local_label_counts = Counter(
+        span["label"] for span in all_spans if span.get("label") in (0, 1)
+    )
+    semantic_training_approved = bool(
+        manifest.get("semantic_review", {}).get("approved_for_training")
+    )
+    local_classes_present = local_label_counts[1] > 0 and local_label_counts[0] > 0
+    clean_preflight_results = [
+        row.get("automatic_clean_preflight") for row in results
+        if row.get("automatic_clean_preflight") is not None
+    ]
+    clean_preflight_technical = sum(
+        row.get("failure_reason") == "automatic_clean_preflight_infrastructure_exhausted"
+        for row in results
+    )
     typed_local_contract = manifest.get("version") == LOCAL_JUDGE_VERSION
     checks = {
         "terminal_partition": len(accepted) + len(rejected) + len(conflicts) + len(holds) == len(results),
@@ -362,16 +459,38 @@ def export(output: Path, results: list[dict[str, Any]], manifest: dict[str, Any]
             row["final_grade"].get("clean_target_eligibility", {}).get("disposition") == "pass"
             for row in accepted
         ) if typed_local_contract else True,
-        "typed_local_labels_have_positive_and_negative": (
-            local_label_counts[1] > 0 and local_label_counts[0] > 0
-        ) if typed_local_contract and accepted else True,
+        "no_clean_local_defect_in_accepted": all(
+            not any(
+                item.get("side") == "clean"
+                and item.get("scope") == "local_defect"
+                and item.get("label") == 1
+                for item in row["final_grade"].get("local_supervision", [])
+            )
+            for row in accepted
+        ) if typed_local_contract else True,
         "no_response_level_scope_promoted_to_local": all(
             span.get("scope") in {"local_defect", "local_support"}
             for span in all_spans
         ),
+        "no_non_null_scorer_input_axis_conflicts": not find_non_null_collisions(scorer_rows),
     }
     if not all(checks.values()):
         raise AssertionError(checks)
+
+    artifact_rows = {
+        "accepted.jsonl": accepted,
+        "rejected.jsonl": rejected,
+        "qc_conflicts.jsonl": conflicts,
+        "qc_holds.jsonl": holds,
+        "train_sft.jsonl": sft_by_split["train"],
+        "train_dpo.jsonl": dpo_by_split["train"],
+        "valid_sft.jsonl": sft_by_split["valid"],
+        "valid_dpo.jsonl": dpo_by_split["valid"],
+        "source_verified_spans.jsonl": all_spans,
+        "excluded_unverified_evidence.jsonl": excluded_spans,
+        "response_level_qc_evidence.jsonl": response_level_evidence,
+        "scorer_label_conflicts.jsonl": scorer_conflict_ledger,
+    }
     manifest.update(
         {
             "status": "complete",
@@ -383,23 +502,60 @@ def export(output: Path, results: list[dict[str, Any]], manifest: dict[str, Any]
             "accepted_by_split": dict(Counter(row["split"] for row in accepted)),
             "source_verified_spans": len(all_spans),
             "local_scorer_label_counts": {
-                "positive": local_label_counts[1], "negative": local_label_counts[0]
+                "positive": local_label_counts[1], "negative": local_label_counts[0],
+                "unknown_masked_by_conflict": sum(span.get("label") is None for span in all_spans),
+            },
+            "local_scorer_supervision_status": {
+                "has_positive_and_negative": local_classes_present,
+                "training_ready": local_classes_present and semantic_training_approved,
+                "note": (
+                    "binary class presence is descriptive; semantic approval is also required"
+                ),
+            },
+            "automatic_clean_preflight_counts": {
+                "enabled": bool(manifest.get("automatic_clean_preflight")),
+                "denominator": len(results),
+                "pass": sum(result.get("eligible") is True for result in clean_preflight_results),
+                "hold": sum(result.get("eligible") is False for result in clean_preflight_results),
+                "technical_failure": clean_preflight_technical,
+            },
+            "structural_validation": {"passed": True, "checks": checks},
+            "training_readiness": {
+                "ready": local_classes_present and semantic_training_approved,
+                "blocking_reasons": [
+                    reason for reason, blocked in (
+                        ("local_scorer_missing_positive_or_negative", not local_classes_present),
+                        ("semantic_review_not_approved", not semantic_training_approved),
+                    ) if blocked
+                ],
+                "not_inferred_from_binary_class_presence": True,
+            },
+            "scorer_export_contract_version": SCORER_EXPORT_CONTRACT_VERSION,
+            "scorer_input_conflicts": {
+                "original_groups": len(original_collisions),
+                "masked_groups": len(scorer_conflict_ledger),
+                "remaining_groups": len(find_non_null_collisions(scorer_rows)),
             },
             "response_level_qc_evidence": len(response_level_evidence),
             "excluded_unverified_evidence": len(excluded_spans),
             "data_contract_checks": checks,
-            "artifact_sha256": {
-                name: sha256_file(output / name)
-                for name in (
-                    "accepted.jsonl", "rejected.jsonl", "qc_conflicts.jsonl",
-                    "qc_holds.jsonl",
-                    "train_sft.jsonl", "train_dpo.jsonl", "valid_sft.jsonl", "valid_dpo.jsonl", "source_verified_spans.jsonl",
-                    "excluded_unverified_evidence.jsonl", "response_level_qc_evidence.jsonl",
-                )
-            },
         }
     )
-    write_json(output / "production_manifest.json", manifest)
+    publish_names = list(artifact_rows)
+    existing = [name for name in publish_names if (output / name).exists()]
+    if existing:
+        raise RuntimeError(f"Refusing to overwrite existing published production artifacts: {existing}")
+    with tempfile.TemporaryDirectory(dir=output, prefix=".export_staging.") as stage_name:
+        stage = Path(stage_name)
+        for name, rows in artifact_rows.items():
+            write_jsonl(stage / name, rows)
+        manifest["artifact_sha256"] = {
+            name: sha256_file(stage / name) for name in publish_names
+        }
+        write_json(stage / "production_manifest.json", manifest)
+        for name in publish_names:
+            os.replace(stage / name, output / name)
+        os.replace(stage / "production_manifest.json", output / "production_manifest.json")
 
 
 class LocalProductionJudge:
@@ -539,46 +695,164 @@ def paired_grade_local(
     stage: int,
     attempt: int,
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
-    from local_qwen_production_qc_v4 import PAIRED_PROMPT, validate_and_map
+    from local_qwen_production_qc_v4 import paired_prompt, validate_and_map
 
     candidate_label = "A" if candidate_a(row["canonical_id"], stage, attempt) else "B"
     clean_label = "B" if candidate_label == "A" else "A"
     a = candidate if candidate_label == "A" else row["clean_response"]
     b = row["clean_response"] if candidate_label == "A" else candidate
     infrastructure = []
+    validation_error: str | None = None
+    previous_output: str | None = None
+    best_quarantined: tuple[int, dict[str, Any], str, dict[str, Any]] | None = None
+
+    def complete_grade(
+        grade: dict[str, Any], raw_output: str, call_usage: dict[str, Any]
+    ) -> dict[str, Any]:
+        grade.update({
+            "raw_output": raw_output,
+            "local_judge_usage": call_usage,
+            "response_a_sha256": hashlib.sha256(a.encode()).hexdigest(),
+            "response_b_sha256": hashlib.sha256(b.encode()).hexdigest(),
+            "response_a_chars": len(a),
+            "response_b_chars": len(b),
+        })
+        grade["unintended_axes"] = [
+            axis for axis in grade["realized_axes"] if axis not in row["intended_axes"]
+        ]
+        return grade
+
     for infrastructure_attempt in range(1, ACCEPTANCE_RULES["max_infrastructure_attempts"] + 1):
+        raw = None
         try:
             judge.set_context(
                 canonical_id=row["canonical_id"], call_purpose="paired_stage_qc",
                 stage_index=stage, semantic_attempt=attempt,
                 infrastructure_attempt=infrastructure_attempt,
+                validation_feedback=validation_error,
             )
-            raw, usage = judge.call(PAIRED_PROMPT.format(
-                question=row["question"], a=a, b=b, clean_label=clean_label
+            raw, usage = judge.call(paired_prompt(
+                question=row["question"], a=a, b=b,
+                validation_error=validation_error,
+                previous_output=previous_output,
             ))
             payload = parse_json_object(raw)
             grade, _ = validate_and_map(
                 payload, a, b, clean_label, candidate_label, question=row["question"]
             )
-            grade.update({
-                "raw_output": raw,
-                "local_judge_usage": usage,
-                "response_a_sha256": hashlib.sha256(a.encode()).hexdigest(),
-                "response_b_sha256": hashlib.sha256(b.encode()).hexdigest(),
-                "response_a_chars": len(a),
-                "response_b_chars": len(b),
-            })
-            grade["unintended_axes"] = [
-                axis for axis in grade["realized_axes"] if axis not in row["intended_axes"]
-            ]
-            return grade, infrastructure
+            return complete_grade(grade, raw, usage), infrastructure
         except Exception as exc:
+            validation_error = f"{type(exc).__name__}: {exc}"
+            if raw is not None:
+                previous_output = raw
+                try:
+                    fallback_payload = parse_json_object(raw)
+                    fallback_grade, fallback_invalid = validate_and_map(
+                        fallback_payload, a, b, clean_label, candidate_label,
+                        question=row["question"], quarantine_invalid_evidence=True,
+                    )
+                    candidate_fallback = (
+                        len(fallback_invalid), fallback_grade, raw, usage
+                    )
+                    if best_quarantined is None or candidate_fallback[0] < best_quarantined[0]:
+                        best_quarantined = candidate_fallback
+                except Exception:
+                    pass
             infrastructure.append({
                 "kind": "local_paired_judge_parse_validation_or_timeout",
                 "attempt": infrastructure_attempt,
-                "reason": f"{type(exc).__name__}: {exc}",
+                "reason": validation_error,
+                "feedback_added_to_next_attempt": (
+                    infrastructure_attempt < ACCEPTANCE_RULES["max_infrastructure_attempts"]
+                ),
             })
+    if best_quarantined is not None:
+        invalid_count, grade, raw, usage = best_quarantined
+        grade = complete_grade(grade, raw, usage)
+        grade["strict_validation_attempts_exhausted"] = True
+        grade["quarantined_invalid_evidence_count"] = invalid_count
+        infrastructure.append({
+            "kind": "local_paired_judge_non_verbatim_evidence_quarantined",
+            "attempt": ACCEPTANCE_RULES["max_infrastructure_attempts"],
+            "reason": (
+                f"strict validation exhausted; removed {invalid_count} non-verbatim "
+                "evidence item(s) without creating local labels"
+            ),
+        })
+        return grade, infrastructure
     return None, infrastructure
+
+
+def automatic_clean_preflight_local(
+    judge: LocalProductionJudge, row: dict[str, Any]
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """Run clean-only local QC before generation with bounded schema retries."""
+    failures: list[dict[str, Any]] = []
+    validation_error: str | None = None
+    previous_output: str | None = None
+    for attempt in range(1, ACCEPTANCE_RULES["max_infrastructure_attempts"] + 1):
+        prompt = ELIGIBILITY_PROMPT.format(
+            question=row["question"], response=row["clean_response"]
+        )
+        if validation_error is not None:
+            prompt += CLEAN_PREFLIGHT_RETRY_INSTRUCTION.format(
+                validation_error=validation_error,
+                previous_output=previous_output or "",
+            )
+        raw = None
+        try:
+            judge.set_context(
+                canonical_id=row["canonical_id"],
+                call_purpose="automatic_clean_preflight",
+                infrastructure_attempt=attempt,
+                validation_feedback=validation_error,
+            )
+            raw, usage = judge.call(prompt)
+            payload = parse_json_object(raw)
+            for axis, item in payload.get("axes", {}).items():
+                if not item.get("material_degradation"):
+                    continue
+                source = item.get("evidence_source")
+                span = str(item.get("evidence_span") or "")
+                if source == "response":
+                    if exact_offset(row["clean_response"], span) is None:
+                        raise ValueError(
+                            f"non-verbatim clean-preflight response evidence for {axis}"
+                        )
+                elif source == "question":
+                    if exact_offset(row["question"], span) is None:
+                        raise ValueError(
+                            f"non-verbatim clean-preflight question evidence for {axis}"
+                        )
+                elif source == "whole_response":
+                    if span:
+                        raise ValueError(
+                            f"whole-response clean-preflight evidence must have empty span for {axis}"
+                        )
+                else:
+                    raise ValueError(
+                        f"material clean-preflight evidence has invalid source for {axis}: {source!r}"
+                    )
+            result = judge._parse_eligibility(payload, row)
+            result.update({
+                "attempt": attempt,
+                "local_judge_usage": usage,
+                "raw_output": raw,
+            })
+            return result, failures
+        except Exception as exc:
+            validation_error = f"{type(exc).__name__}: {exc}"
+            if raw is not None:
+                previous_output = raw
+            failures.append({
+                "kind": "automatic_clean_preflight_parse_validation_or_timeout",
+                "attempt": attempt,
+                "reason": validation_error,
+                "feedback_added_to_next_attempt": (
+                    attempt < ACCEPTANCE_RULES["max_infrastructure_attempts"]
+                ),
+            })
+    return None, failures
 
 
 def process_one_local(
@@ -588,9 +862,49 @@ def process_one_local(
     from fullpaper_acl_pipeline import normalize_text
 
     row = item["clean"]
+    infrastructure: list[dict[str, Any]] = []
+    automatic_clean_preflight = None
+    contextual_clean_review = row.get("contextual_clean_review")
+    if contextual_clean_review is not None:
+        from source_integrity_contract import validate_contextual_clean_review
+
+        reviewed = validate_contextual_clean_review(
+            row["question"], row["clean_response"], contextual_clean_review
+        )
+        if reviewed["disposition"] != "pass":
+            return {
+                "status": "qc_hold",
+                "failure_reason": "contextual_clean_review_required",
+                "contextual_clean_review": reviewed,
+                "stage_history": [],
+                "infrastructure_failures": infrastructure,
+                "automatic_clean_preflight": None,
+            }
+    elif item.get("automatic_clean_preflight"):
+        automatic_clean_preflight, failures = automatic_clean_preflight_local(judge, row)
+        infrastructure.extend(failures)
+        if automatic_clean_preflight is None:
+            return {
+                "status": "technical_failure",
+                "failure_reason": "automatic_clean_preflight_infrastructure_exhausted",
+                "stage_history": [],
+                "infrastructure_failures": infrastructure,
+                "automatic_clean_preflight": None,
+            }
+        if not automatic_clean_preflight["eligible"]:
+            return {
+                "status": "qc_hold",
+                "failure_reason": "automatic_clean_preflight_hold",
+                "stage_history": [],
+                "infrastructure_failures": infrastructure,
+                "automatic_clean_preflight": automatic_clean_preflight,
+            }
+
+    def with_clean_preflight(payload: dict[str, Any]) -> dict[str, Any]:
+        return {**payload, "automatic_clean_preflight": automatic_clean_preflight}
+
     current = row["clean_response"]
     history: list[dict[str, Any]] = []
-    infrastructure: list[dict[str, Any]] = []
     final_grade = None
     for stage, axis in enumerate(item["intended_axes"], 1):
         feedback = None
@@ -600,6 +914,7 @@ def process_one_local(
                 row["canonical_id"], row["split"], row["question"], row["clean_response"], current,
                 tuple(item["intended_axes"]), tuple(item["intended_axes"][: stage - 1]), axis, stage,
                 _selection_generation_seed(item, stage, semantic_attempt), semantic_attempt, feedback,
+                item.get("generation_objective", "response_pair"),
             )
             candidate = None
             allowance = None
@@ -613,6 +928,7 @@ def process_one_local(
                         "semantic_attempt": semantic_attempt,
                         "infrastructure_attempt": infrastructure_attempt,
                         "generation_seed": request.generation_seed,
+                        "generation_objective": request.generation_objective,
                     }, candidate, time.monotonic() - generation_started)
                 except Exception as exc:
                     infrastructure.append({
@@ -645,12 +961,12 @@ def process_one_local(
                     continue
                 break
             if candidate is None:
-                return {
+                return with_clean_preflight({
                     "status": "technical_failure",
                     "failure_reason": "generation_infrastructure_exhausted",
                     "stage_history": history,
                     "infrastructure_failures": infrastructure,
-                }
+                })
             immediate = None
             if not candidate.text:
                 immediate = "empty_generation"
@@ -663,7 +979,9 @@ def process_one_local(
                     "stage_index": stage, "target_axis": axis,
                     "semantic_attempt": semantic_attempt,
                     "generation_seed": request.generation_seed,
+                    "generation_objective": request.generation_objective,
                     "candidate_response": candidate.text,
+                    "edit_trace": text_edit_trace(current, candidate.text),
                     "generation": candidate.__dict__, "grade": None,
                     "accepted": False, "reason": immediate,
                 })
@@ -677,12 +995,12 @@ def process_one_local(
                 **event, "stage": stage, "semantic_attempt": semantic_attempt,
             } for event in judge_infrastructure)
             if grade is None:
-                return {
+                return with_clean_preflight({
                     "status": "technical_failure",
                     "failure_reason": "local_paired_judge_infrastructure_exhausted",
                     "stage_history": history,
                     "infrastructure_failures": infrastructure,
-                }
+                })
             conflict = []
             if grade["clean_scores"]["specificity"]["score"] == 1:
                 conflict.append("clean_specificity_score_1")
@@ -704,19 +1022,22 @@ def process_one_local(
                     "stage_index": stage, "target_axis": axis,
                     "semantic_attempt": semantic_attempt,
                     "generation_seed": request.generation_seed,
+                    "generation_objective": request.generation_objective,
                     "candidate_response": candidate.text,
+                    "edit_trace": text_edit_trace(current, candidate.text),
                     "generation": candidate.__dict__, "grade": grade,
                     "accepted": False, "reason": "qc_conflict",
                     "conflict_flags": conflict,
                     "bounded_clean_recheck": recheck,
                 })
-                return {
+                return with_clean_preflight({
                     "status": "qc_conflict", "failure_reason": ";".join(conflict),
                     "stage_history": history, "infrastructure_failures": infrastructure,
                     "conflict_recheck": recheck,
-                }
+                })
             disposition, reason = content_disposition(
-                row["question"], candidate.text, grade, clean=row["clean_response"]
+                row["question"], candidate.text, grade, clean=row["clean_response"],
+                contextual_clean_review=contextual_clean_review,
             )
             missing = [
                 intended for intended in item["intended_axes"][:stage]
@@ -729,15 +1050,17 @@ def process_one_local(
                 "stage_index": stage, "target_axis": axis,
                 "semantic_attempt": semantic_attempt,
                 "generation_seed": request.generation_seed,
+                "generation_objective": request.generation_objective,
                 "candidate_response": candidate.text,
+                "edit_trace": text_edit_trace(current, candidate.text),
                 "generation": candidate.__dict__, "grade": grade,
                 "accepted": disposition == "pass", "reason": reason,
             })
             if disposition == "hold":
-                return {
+                return with_clean_preflight({
                     "status": "qc_hold", "failure_reason": reason,
                     "stage_history": history, "infrastructure_failures": infrastructure,
-                }
+                })
             if disposition == "pass":
                 current = candidate.text
                 final_grade = grade
@@ -745,17 +1068,17 @@ def process_one_local(
                 break
             feedback = reason
         if not stage_ok:
-            return {
+            return with_clean_preflight({
                 "status": "rejected", "failure_reason": feedback or "semantic_stage_failed",
                 "stage_history": history, "infrastructure_failures": infrastructure,
-            }
-    return {
+            })
+    return with_clean_preflight({
         "status": "accepted", "corrupted_response": current,
         "realized_axes": final_grade["realized_axes"],
         "unintended_axes": final_grade["unintended_axes"],
         "final_grade": final_grade,
         "stage_history": history, "infrastructure_failures": infrastructure,
-    }
+    })
 
 
 def main() -> None:
@@ -765,12 +1088,17 @@ def main() -> None:
     parser.add_argument("--max-inputs", type=int, required=True)
     parser.add_argument("--splits", default="train", help="Comma-separated canonical splits: train, valid, or train,valid")
     parser.add_argument("--known-holds-file", default=str(DEFAULT_HOLDS))
+    parser.add_argument(
+        "--additional-known-hold-ids-file", action="append", default=[],
+        help="Additional newline-delimited canonical IDs to exclude; may be repeated.",
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--worker-index", type=int, default=0)
     parser.add_argument("--worker-count", type=int, default=1)
     parser.add_argument("--selected-gpu", type=int, default=0)
     parser.add_argument("--required-free-vram-mib", type=int, default=DEFAULT_REQUIRED_FREE_VRAM_MIB)
     parser.add_argument("--max-input-tokens", type=int, default=4096)
+    parser.add_argument("--generator-model-dir", help="Relocated local snapshot for the frozen Qwen generator")
     parser.add_argument("--budget-ledger", required=True)
     parser.add_argument("--max-api-requests", type=int, required=True)
     parser.add_argument("--max-api-usd", type=float, required=True)
@@ -780,9 +1108,21 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--judge-backend", choices=("external-gpt", "local-qwen35-27b"), default="local-qwen35-27b")
     parser.add_argument("--local-judge-model-dir")
-    parser.add_argument("--local-judge-max-new-tokens", type=int, default=2400)
+    parser.add_argument("--local-judge-max-new-tokens", type=int, default=3200)
     parser.add_argument("--local-judge-timeout-seconds", type=float, default=300.0)
     parser.add_argument("--carry-forward-checkpoint")
+    parser.add_argument(
+        "--clean-context-review-file",
+        help=(
+            "Optional JSONL of hash-bound complete-question/clean reviews. "
+            "Review data is applied generically; missing IDs continue through automated QC."
+        ),
+    )
+    parser.add_argument(
+        "--automatic-clean-preflight",
+        action="store_true",
+        help="Run bounded local-Qwen clean eligibility QC before any generator call.",
+    )
     args = parser.parse_args()
     if args.judge_backend != "local-qwen35-27b":
         raise RuntimeError(
@@ -793,6 +1133,11 @@ def main() -> None:
     allowed_splits = {item.strip() for item in args.splits.split(",") if item.strip()}
     if not allowed_splits or not allowed_splits <= {"train", "valid"}:
         raise ValueError("--splits must contain only train and/or valid")
+    generator_model_dir = Path(
+        args.generator_model_dir or GENERATORS["qwen"]["snapshot"]
+    ).resolve()
+    if not generator_model_dir.is_dir():
+        raise FileNotFoundError(f"Frozen local generator snapshot is missing: {generator_model_dir}")
 
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -806,9 +1151,37 @@ def main() -> None:
     clean_qc = {row["canonical_id"]: row for row in clean_qc_rows}
     holds_path = Path(args.known_holds_file).resolve()
     held_ids = {row["canonical_id"] for row in read_jsonl(holds_path)}
+    additional_hold_paths = [Path(path).resolve() for path in args.additional_known_hold_ids_file]
+    for path in additional_hold_paths:
+        held_ids.update(
+            line.strip() for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        )
     selected = load_selection(
         Path(args.selection_file).resolve(), args.max_inputs, canonical, clean_qc, held_ids, allowed_splits
     )
+    for item in selected:
+        item["automatic_clean_preflight"] = bool(args.automatic_clean_preflight)
+    clean_context_review_path = (
+        Path(args.clean_context_review_file).resolve()
+        if args.clean_context_review_file else None
+    )
+    clean_context_reviews: dict[str, dict[str, Any]] = {}
+    if clean_context_review_path is not None:
+        review_rows = list(read_jsonl(clean_context_review_path))
+        clean_context_reviews = {str(row.get("canonical_id") or ""): row for row in review_rows}
+        if "" in clean_context_reviews or len(clean_context_reviews) != len(review_rows):
+            raise ValueError("Contextual clean review file needs unique canonical IDs")
+        selected_ids_for_review = {item["clean"]["canonical_id"] for item in selected}
+        unknown_review_ids = set(clean_context_reviews) - selected_ids_for_review
+        if unknown_review_ids:
+            raise ValueError(
+                f"Contextual clean review references IDs outside selection: {sorted(unknown_review_ids)[:5]}"
+            )
+        for item in selected:
+            review = clean_context_reviews.get(item["clean"]["canonical_id"])
+            if review is not None:
+                item["clean"] = {**item["clean"], "contextual_clean_review": review}
     frozen_rows = [
         {
             "canonical_id": item["clean"]["canonical_id"],
@@ -818,6 +1191,7 @@ def main() -> None:
             "source_group_id": item["clean"]["source_group_id"],
             "intended_axes": item["intended_axes"],
             "generation_seeds": item["generation_seeds"],
+            "generation_objective": item["generation_objective"],
         }
         for item in selected
     ]
@@ -844,7 +1218,8 @@ def main() -> None:
     remaining_selected = selected[len(carry_rows):]
     if local_judge:
         from local_qwen_production_qc_v4 import (
-            JUDGE_REPO, JUDGE_REVISION, VERSION as local_qc_version, prompt_sha256 as local_prompt_sha256,
+            JUDGE_REPO, JUDGE_REVISION, SYSTEM_PROMPT as LOCAL_SYSTEM_PROMPT,
+            VERSION as local_qc_version, prompt_sha256 as local_prompt_sha256,
         )
         judge_contract: dict[str, Any] = {
             "backend": "local_transformers",
@@ -853,6 +1228,12 @@ def main() -> None:
             "local_path": str(Path(args.local_judge_model_dir).resolve()),
             "qc_version": local_qc_version,
             "paired_prompt_sha256": local_prompt_sha256(),
+            "clean_preflight_prompt_sha256": hashlib.sha256(
+                (
+                    LOCAL_SYSTEM_PROMPT + "\n" + ELIGIBILITY_PROMPT + "\n"
+                    + CLEAN_PREFLIGHT_RETRY_INSTRUCTION
+                ).encode("utf-8")
+            ).hexdigest(),
             "max_new_tokens": args.local_judge_max_new_tokens,
             "call_timeout_seconds": args.local_judge_timeout_seconds,
             "enable_thinking": False,
@@ -871,13 +1252,32 @@ def main() -> None:
         "canonical_file_sha256": sha256_file(canonical_path),
         "clean_qc_file_sha256": sha256_file(qc_path),
         "known_holds_file_sha256": sha256_file(holds_path),
+        "additional_known_hold_ids": [
+            {"path": str(path), "sha256": sha256_file(path)} for path in additional_hold_paths
+        ],
+        "clean_context_review": (
+            {
+                "path": str(clean_context_review_path),
+                "sha256": sha256_file(clean_context_review_path),
+                "reviewed_ids": len(clean_context_reviews),
+            }
+            if clean_context_review_path is not None else None
+        ),
+        "automatic_clean_preflight": bool(args.automatic_clean_preflight),
+        "known_hold_ids_after_union": len(held_ids),
         "selected_after_cap": len(selected),
+        "selection_execution_contract_sha256": selection_hash(frozen_rows),
+        # Deprecated alias retained for readers of the v5 manifest.  This is a
+        # hash of the expanded execution projection, not the selection file.
         "selection_sha256": selection_hash(frozen_rows),
         "processing_cap": args.max_inputs,
         "worker_count": args.worker_count,
         "allowed_splits": sorted(allowed_splits),
         "axis_count_distribution": dict(Counter(item["axis_count"] for item in selected)),
-        "generator": GENERATORS["qwen"],
+        "generation_objective_distribution": dict(
+            Counter(item["generation_objective"] for item in selected)
+        ),
+        "generator": {**GENERATORS["qwen"], "snapshot": str(generator_model_dir)},
         "judge": judge_contract,
         "seed": BUILD_SEED,
         "acceptance_rules": ACCEPTANCE_RULES,
@@ -960,7 +1360,7 @@ def main() -> None:
             budget_max_input_tokens=args.budget_max_input_tokens_per_request,
             budget_worker_id=f"worker-{args.worker_index}",
         )
-    backend = LocalGenerator("qwen", 1, args.max_input_tokens)
+    backend = LocalGenerator("qwen", 1, args.max_input_tokens, snapshot_override=generator_model_dir)
     started = time.monotonic()
     try:
         for item in worker_items:
@@ -1009,6 +1409,7 @@ def main() -> None:
                 "question_normalized_sha256": item["clean"]["question_normalized_sha256"],
                 "duplicate_cluster_id": item["clean"]["duplicate_cluster_id"],
                 "source_group_id": item["clean"]["source_group_id"],
+                "generation_objective": item["generation_objective"],
                 **result,
                 "usage": usage,
                 "run_fingerprint": run_fingerprint,

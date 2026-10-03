@@ -343,9 +343,14 @@ def generation_stop_metadata(
 
 
 class LocalGenerator:
-    def __init__(self, name: str, batch_size: int, max_input_tokens: int) -> None:
-        self.name, self.spec = name, GENERATORS[name]
-        snapshot = Path(self.spec["snapshot"])
+    def __init__(
+        self, name: str, batch_size: int, max_input_tokens: int,
+        snapshot_override: Path | None = None,
+    ) -> None:
+        self.name = name
+        self.spec = {**GENERATORS[name]}
+        snapshot = (snapshot_override or Path(self.spec["snapshot"])).resolve()
+        self.spec["snapshot"] = str(snapshot)
         if not snapshot.is_dir():
             raise FileNotFoundError(snapshot)
         self.tokenizer = AutoTokenizer.from_pretrained(snapshot, local_files_only=True)

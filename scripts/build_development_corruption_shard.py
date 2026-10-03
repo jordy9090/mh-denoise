@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from corruption_contract_v2 import AXES, STAGE_DIRECTIVES, StageRequest, build_stage_prompt, paired_graded_realized_axes, parse_json_object
+from corruption_contract_v2 import AXES, LOCAL_SCORER_STAGE_DIRECTIVES, STAGE_DIRECTIVES, StageRequest, build_stage_prompt, paired_graded_realized_axes, parse_json_object
 from fullpaper_acl_pipeline import DEFAULT_OUTPUT_DIR, largest_remainder_counts, normalize_text, read_jsonl, sha256_file, stable_random_key, write_json, write_jsonl
 from run_clean_target_qc import retry_delay
 from run_gemma_corruption_pilot_v2 import attach_specs, balanced_specs
@@ -61,7 +61,11 @@ ACCEPTANCE_RULES={"score_drop":1,"toxicity_increase":1,"medical_boundary":"clean
 def htext(value:str)->str:return hashlib.sha256(value.encode()).hexdigest()
 def canonical_json_hash(value:Any)->str:return htext(json.dumps(value,sort_keys=True,separators=(",",":")))
 def paired_prompt_hash()->str:return htext(PAIRED_PROMPT)
-def generation_prompt_hash()->str:return canonical_json_hash(STAGE_DIRECTIVES)
+def generation_prompt_hash()->str:
+    return canonical_json_hash({
+        "response_pair": STAGE_DIRECTIVES,
+        "local_scorer": LOCAL_SCORER_STAGE_DIRECTIVES,
+    })
 def clean_qc_hash()->str:return htext(ELIGIBILITY_PROMPT)
 
 def previous_calibration_clusters(root:Path,by_id:dict[str,dict[str,Any]])->set[str]:

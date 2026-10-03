@@ -142,7 +142,12 @@ def build_prompt(tokenizer, ex: Dict, prompt_style: str = "professor") -> str:
         {"role": "user", "content": build_user_content(ex, prompt_style=prompt_style)},
     ]
     if getattr(tokenizer, "chat_template", None):
-        return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        return tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
     return f"System: {system}\n\nUser: {build_user_content(ex, prompt_style=prompt_style)}\n\nAssistant:"
 
 

@@ -1,4 +1,8 @@
 import argparse
+import hashlib
+import json
+import time
+from pathlib import Path
 
 import torch
 from peft import PeftModel
@@ -12,6 +16,7 @@ from selective_risk_refinement_utils import (
     read_jsonl,
     write_jsonl,
 )
+from fullpaper_backbone_utils import load_fullpaper_tokenizer, load_text_generation_model
 
 
 def load_base_model(model_name: str, use_4bit: bool):
@@ -22,20 +27,20 @@ def load_base_model(model_name: str, use_4bit: bool):
             bnb_4bit_compute_dtype=torch.bfloat16,
             bnb_4bit_use_double_quant=True,
         )
-        return AutoModelForCausalLM.from_pretrained(
+        return load_text_generation_model(
             model_name,
             quantization_config=bnb,
             torch_dtype=torch.bfloat16,
             device_map="auto",
-            trust_remote_code=True,
         )
-    kwargs = {"trust_remote_code": True}
+    kwargs = {}
     if torch.cuda.is_available():
         kwargs.update({"torch_dtype": torch.bfloat16, "device_map": "auto"})
-    return AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
+    return load_text_generation_model(model_name, **kwargs)
 
 
 def main():
+    started = time.monotonic()
     ap = argparse.ArgumentParser()
     ap.add_argument("--base_model", default="google/gemma-4-E4B-it")
     ap.add_argument("--adapter_dir", required=True)
@@ -56,7 +61,10 @@ def main():
     ap.add_argument("--no_4bit", action="store_true")
     args = ap.parse_args()
 
-    tokenizer = AutoTokenizer.from_pretrained(args.adapter_dir, trust_remote_code=True)
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
+    tokenizer = load_fullpaper_tokenizer(args.adapter_dir)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
@@ -95,6 +103,27 @@ def main():
         outs.append(out)
 
     write_jsonl(outs, args.output)
+    def file_sha256(path):
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    manifest = {
+        "status": "complete_sft_inference_for_risk_tuning",
+        "base_model": str(Path(args.base_model).resolve()),
+        "adapter_dir": str(Path(args.adapter_dir).resolve()),
+        "input": {"path": str(Path(args.input).resolve()), "sha256": file_sha256(args.input), "rows": len(rows)},
+        "output": {"path": str(Path(args.output).resolve()), "sha256": file_sha256(args.output), "rows": len(outs)},
+        "settings": vars(args),
+        "runtime_seconds": time.monotonic() - started,
+        "peak_allocated_cuda_bytes": torch.cuda.max_memory_allocated() if torch.cuda.is_available() else 0,
+        "source_span_offsets_transferred": False,
+    }
+    Path(args.output).with_suffix(".manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     print("rows:", len(outs))
     print("saved to", args.output)
 

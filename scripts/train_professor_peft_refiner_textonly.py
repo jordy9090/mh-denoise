@@ -1,5 +1,6 @@
 import argparse
 import json
+import time
 from pathlib import Path
 
 import torch
@@ -7,6 +8,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 
 import train_professor_peft_refiner as base
+from fullpaper_backbone_utils import load_fullpaper_tokenizer, load_text_generation_model
 
 
 NON_TEXT_MARKERS = ["vision_tower", "visual", "audio_tower", "audio", "image"]
@@ -19,7 +21,11 @@ def resolve_text_only_target_modules(model, requested: str, output_dir: str):
     all_projection_hits = []
 
     for name, _ in model.named_modules():
-        if not any(name.endswith(f"self_attn.{proj}") for proj in requested_modules):
+        if not any(
+            name.endswith(f"self_attn.{proj}")
+            or name.endswith(f"attention.{proj}")
+            for proj in requested_modules
+        ):
             continue
 
         all_projection_hits.append(name)
@@ -29,7 +35,7 @@ def resolve_text_only_target_modules(model, requested: str, output_dir: str):
             non_text_hits.append(name)
             continue
 
-        if name.startswith("model.language_model.layers."):
+        if ".layers." in name and not any(marker in low for marker in NON_TEXT_MARKERS):
             text_hits.append(name)
 
     text_hits = list(dict.fromkeys(text_hits))
@@ -49,7 +55,7 @@ def resolve_text_only_target_modules(model, requested: str, output_dir: str):
             print("  ", x)
 
     if not text_hits:
-        raise RuntimeError("No text decoder LoRA targets found under model.language_model.layers.*")
+        raise RuntimeError("No text-decoder LoRA targets found for the requested projections")
 
     if any(any(marker in x.lower() for marker in NON_TEXT_MARKERS) for x in text_hits):
         raise RuntimeError("Non-text module leaked into LoRA target list")
@@ -74,6 +80,7 @@ def resolve_text_only_target_modules(model, requested: str, output_dir: str):
 
 
 def main():
+    started = time.monotonic()
     ap = argparse.ArgumentParser()
     ap.add_argument("--train_file", required=True)
     ap.add_argument("--valid_file", required=True)
@@ -110,8 +117,10 @@ def main():
     args = ap.parse_args()
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    tokenizer = load_fullpaper_tokenizer(args.model)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
@@ -123,12 +132,11 @@ def main():
         bnb_4bit_use_double_quant=True,
     )
 
-    model = AutoModelForCausalLM.from_pretrained(
+    model = load_text_generation_model(
         args.model,
         quantization_config=bnb,
         torch_dtype=torch.bfloat16,
         device_map="auto",
-        trust_remote_code=True,
     )
     model.config.use_cache = False
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
@@ -171,12 +179,29 @@ def main():
         data_collator=collator,
     )
 
-    trainer.train()
+    train_result = trainer.train()
     trainer.save_model(Path(args.output_dir) / "final")
     tokenizer.save_pretrained(Path(args.output_dir) / "final")
 
     with open(Path(args.output_dir) / "train_args.json", "w", encoding="utf-8") as f:
         json.dump(vars(args), f, indent=2, ensure_ascii=False)
+    run_manifest = {
+        "status": "complete_training",
+        "initialization": "pinned pretrained base with a newly initialized text-only LoRA adapter",
+        "model": str(Path(args.model).resolve()),
+        "train_file": str(Path(args.train_file).resolve()),
+        "valid_file": str(Path(args.valid_file).resolve()),
+        "train_rows": len(train_ds),
+        "valid_rows": len(valid_ds),
+        "optimizer_steps": trainer.state.global_step,
+        "runtime_seconds": time.monotonic() - started,
+        "peak_allocated_cuda_bytes": torch.cuda.max_memory_allocated() if torch.cuda.is_available() else 0,
+        "train_metrics": train_result.metrics,
+        "settings": vars(args),
+        "saved": str((Path(args.output_dir) / "final").resolve()),
+    }
+    with open(Path(args.output_dir) / "training_manifest.json", "w", encoding="utf-8") as f:
+        json.dump(run_manifest, f, indent=2, ensure_ascii=False)
 
 
 if __name__ == "__main__":

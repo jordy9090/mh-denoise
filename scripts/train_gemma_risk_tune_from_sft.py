@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
@@ -27,7 +28,10 @@ from selective_risk_refinement_utils import (
     read_jsonl,
     score_candidate,
     write_jsonl,
+    configure_risk_contract,
 )
+from fullpaper_risk_contract import require_fullpaper_axis_order
+from fullpaper_backbone_utils import load_fullpaper_tokenizer, load_text_generation_model
 
 
 def load_base_model(model_name: str, use_4bit: bool):
@@ -38,17 +42,16 @@ def load_base_model(model_name: str, use_4bit: bool):
             bnb_4bit_compute_dtype=torch.bfloat16,
             bnb_4bit_use_double_quant=True,
         )
-        return AutoModelForCausalLM.from_pretrained(
+        return load_text_generation_model(
             model_name,
             quantization_config=bnb,
             torch_dtype=torch.bfloat16,
             device_map="auto",
-            trust_remote_code=True,
         )
-    kwargs = {"trust_remote_code": True}
+    kwargs = {}
     if torch.cuda.is_available():
         kwargs.update({"torch_dtype": torch.bfloat16, "device_map": "auto"})
-    return AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
+    return load_text_generation_model(model_name, **kwargs)
 
 
 def load_classifier(path: str, device):
@@ -243,6 +246,7 @@ def save_adapter(model, tokenizer, output_dir: Path, args, metrics=None):
 
 
 def main():
+    started = time.monotonic()
     ap = argparse.ArgumentParser()
     ap.add_argument("--base_model", "--model", dest="base_model", default="google/gemma-4-E4B-it")
     ap.add_argument("--init_adapter_dir", required=True)
@@ -251,6 +255,7 @@ def main():
     ap.add_argument("--output_dir", required=True)
     ap.add_argument("--router_dir", required=True)
     ap.add_argument("--risk_scorer_dir", required=True)
+    ap.add_argument("--risk_contract", choices=["legacy", "fullpaper_v1"], default="legacy")
     ap.add_argument("--zt_strategy", choices=["threshold", "staged", "staged_risk", "risk_tag"], default="staged_risk")
     ap.add_argument("--learning_rate", "--lr", dest="learning_rate", type=float, default=5e-6)
     ap.add_argument("--num_train_epochs", "--epochs", dest="epochs", type=int, default=1)
@@ -283,6 +288,9 @@ def main():
     ap.add_argument("--no_4bit", action="store_true")
     ap.add_argument("--enable_gradient_checkpointing", action="store_true")
     args = ap.parse_args()
+    configure_risk_contract(args.risk_contract)
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
 
     if args.max_source_len is None:
         args.max_source_len = max(128, int(args.max_length) - int(args.max_target_len))
@@ -293,6 +301,9 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     router_tok, router = load_classifier(args.router_dir, device)
     risk_tok, risk_model = load_classifier(args.risk_scorer_dir, device)
+    if args.risk_contract == "fullpaper_v1":
+        require_fullpaper_axis_order(router.config)
+        require_fullpaper_axis_order(risk_model.config)
 
     train_rows = enrich_rows(read_jsonl(args.train_file), router, router_tok, risk_model, risk_tok, device, args, "train")
     valid_rows = enrich_rows(read_jsonl(args.valid_file), router, router_tok, risk_model, risk_tok, device, args, "valid")
@@ -300,7 +311,7 @@ def main():
     write_jsonl(valid_rows, str(out / "risk_tune_valid_enriched.jsonl"))
     train_rows = oversample_high_risk(train_rows, args.risk_oversample_threshold, args.risk_oversample_factor)
 
-    tokenizer = AutoTokenizer.from_pretrained(args.init_adapter_dir, trust_remote_code=True)
+    tokenizer = load_fullpaper_tokenizer(args.init_adapter_dir)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
@@ -404,6 +415,25 @@ def main():
         save_adapter(model, tokenizer, out / "best", args, {"valid_loss": best, "step": step})
         print("[save] best ->", out / "best")
     save_adapter(model, tokenizer, out / "final", args, {"valid_loss": final_loss, "step": step})
+    manifest = {
+        "status": "complete_training",
+        "initialization": "continued from the saved SFT adapter",
+        "base_model": str(Path(args.base_model).resolve()),
+        "init_adapter_dir": str(Path(args.init_adapter_dir).resolve()),
+        "risk_contract": args.risk_contract,
+        "train_source_rows": len(read_jsonl(args.train_file)),
+        "valid_source_rows": len(read_jsonl(args.valid_file)),
+        "train_enriched_rows_before_oversampling": len(read_jsonl(str(out / "risk_tune_train_enriched.jsonl"))),
+        "valid_enriched_rows": len(valid_rows),
+        "optimizer_steps": step,
+        "final_valid_loss": final_loss,
+        "best_valid_loss": best,
+        "runtime_seconds": time.monotonic() - started,
+        "peak_allocated_cuda_bytes": torch.cuda.max_memory_allocated() if torch.cuda.is_available() else 0,
+        "settings": vars(args),
+        "saved": str((out / "final").resolve()),
+    }
+    (out / "training_manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print("[done] best valid loss:", best)
     print("[done] final ->", out / "final")
 

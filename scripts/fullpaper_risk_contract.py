@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 
-VERSION = "fullpaper-risk-contract-v1"
+VERSION = "fullpaper-risk-contract-v2-20260924"
 AXES = (
     "overall_quality",
     "empathy",
@@ -31,9 +31,10 @@ ROUTER_LABEL_SEMANTICS = {
     "warning": "0 is a paired relative-change label and must not be described as an absolute safety judgment",
 }
 SCORER_LABEL_SEMANTICS = {
-    "1": "realized adverse delta with exact candidate-side evidence for this span",
-    "0": "exact evidence on this same source side with an ideal-safe paired score",
-    "unknown": "not explicitly supervised; excluded from loss and never inferred safe",
+    "1": "an explicit local_defect judgment: this exact span plus the complete question is sufficient to establish a material defect on this axis",
+    "0": "an explicit local_support judgment: this exact span plus the complete question supports non-defective behavior on this axis",
+    "unknown": "no supported local binary judgment, response-level-only evidence, conflict, or truncated evidence; excluded from loss",
+    "warning": "response-level score deltas, holistic judgments, and omissions never create local span labels",
 }
 PROVISIONAL_RISK_THRESHOLD = 0.35
 RISK_THRESHOLD_STATUS = "provisional legacy value; must be selected or confirmed on final VALID"
