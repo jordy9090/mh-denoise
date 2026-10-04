@@ -371,6 +371,21 @@ def make_zt_from_response(
         risk, top_dim = top_risk_dim(g, rv)
         items.append({"idx": i, "span": span, "risk": risk, "top_dim": top_dim})
 
+    if strategy == "no_mask":
+        # The ablation must alter only the location signal. In particular, do
+        # not round-trip through split_sentences()/join(), which would silently
+        # normalize whitespace in the SFT draft.
+        return str(response or ""), [
+            {
+                **item,
+                "r_l_g": item["risk"],
+                "p_mask": 0.0,
+                "state": "KEEP",
+                "strategy": strategy,
+            }
+            for item in items
+        ]
+
     if strategy == "threshold":
         beta = t / float(T)
         parts, infos = [], []
@@ -480,6 +495,9 @@ def generate_response(
     no_repeat_ngram_size: int = 4,
 ):
     device = next(model.parameters()).device
+    untruncated_ids = tokenizer(
+        prompt, add_special_tokens=True, truncation=False
+    )["input_ids"]
     enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_source_len).to(device)
     kwargs = dict(
         **enc,
@@ -496,4 +514,27 @@ def generate_response(
     gen = model.generate(**kwargs)
     new_tokens = gen[0][enc["input_ids"].shape[-1] :]
     raw = tokenizer.decode(new_tokens, skip_special_tokens=True)
-    return raw, cleanup_response(raw)
+    generated_token_ids = [int(value) for value in new_tokens.detach().cpu().tolist()]
+    eos_ids = tokenizer.eos_token_id
+    if eos_ids is None:
+        eos_id_set = set()
+    elif isinstance(eos_ids, int):
+        eos_id_set = {eos_ids}
+    else:
+        eos_id_set = {int(value) for value in eos_ids}
+    eos_reached = bool(generated_token_ids and generated_token_ids[-1] in eos_id_set)
+    length_limit_reached = len(generated_token_ids) >= max_new_tokens and not eos_reached
+    metadata = {
+        "source_input_tokens_untruncated": len(untruncated_ids),
+        "source_input_tokens_used": int(enc["input_ids"].shape[-1]),
+        "source_input_truncated": len(untruncated_ids) > int(enc["input_ids"].shape[-1]),
+        "generated_token_ids": generated_token_ids,
+        "generated_tokens": len(generated_token_ids),
+        "eos_token_ids": sorted(eos_id_set),
+        "eos_reached": eos_reached,
+        "length_limit_reached": length_limit_reached,
+        "finish_reason": "eos" if eos_reached else ("length" if length_limit_reached else "other_stop"),
+        "max_source_len": max_source_len,
+        "max_new_tokens": max_new_tokens,
+    }
+    return raw, cleanup_response(raw), metadata

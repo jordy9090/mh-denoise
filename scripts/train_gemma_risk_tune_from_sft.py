@@ -1,6 +1,7 @@
 import argparse
 import json
 import math
+import random
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -256,7 +257,11 @@ def main():
     ap.add_argument("--router_dir", required=True)
     ap.add_argument("--risk_scorer_dir", required=True)
     ap.add_argument("--risk_contract", choices=["legacy", "fullpaper_v1"], default="legacy")
-    ap.add_argument("--zt_strategy", choices=["threshold", "staged", "staged_risk", "risk_tag"], default="staged_risk")
+    ap.add_argument(
+        "--zt_strategy",
+        choices=["threshold", "staged", "staged_risk", "risk_tag", "no_mask"],
+        default="staged_risk",
+    )
     ap.add_argument("--learning_rate", "--lr", dest="learning_rate", type=float, default=5e-6)
     ap.add_argument("--num_train_epochs", "--epochs", dest="epochs", type=int, default=1)
     ap.add_argument("--per_device_train_batch_size", "--batch_size", dest="batch_size", type=int, default=1)
@@ -287,8 +292,22 @@ def main():
     ap.add_argument("--num_workers", type=int, default=0)
     ap.add_argument("--no_4bit", action="store_true")
     ap.add_argument("--enable_gradient_checkpointing", action="store_true")
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument(
+        "--enrich_only", action="store_true",
+        help="Write scorer/router-derived z_t rows and stop before loading the generation model.",
+    )
+    ap.add_argument(
+        "--inputs_pre_enriched", action="store_true",
+        help="Use input rows that already contain g_sft, risk spans, and z_t from the requested mode.",
+    )
     args = ap.parse_args()
+    if args.enrich_only and args.inputs_pre_enriched:
+        raise ValueError("--enrich_only and --inputs_pre_enriched are mutually exclusive")
     configure_risk_contract(args.risk_contract)
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
 
@@ -299,16 +318,52 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    router_tok, router = load_classifier(args.router_dir, device)
-    risk_tok, risk_model = load_classifier(args.risk_scorer_dir, device)
-    if args.risk_contract == "fullpaper_v1":
-        require_fullpaper_axis_order(router.config)
-        require_fullpaper_axis_order(risk_model.config)
-
-    train_rows = enrich_rows(read_jsonl(args.train_file), router, router_tok, risk_model, risk_tok, device, args, "train")
-    valid_rows = enrich_rows(read_jsonl(args.valid_file), router, router_tok, risk_model, risk_tok, device, args, "valid")
+    if args.inputs_pre_enriched:
+        train_rows = read_jsonl(args.train_file)
+        valid_rows = read_jsonl(args.valid_file)
+        for split_name, source_rows in (("train", train_rows), ("valid", valid_rows)):
+            invalid = [
+                row.get("canonical_id")
+                for row in source_rows
+                if row.get("zt_strategy") != args.zt_strategy
+                or "z_t_from_sft" not in row
+                or "g_sft" not in row
+            ]
+            if invalid:
+                raise RuntimeError(
+                    f"{split_name} pre-enriched rows do not match z_t mode {args.zt_strategy}: {invalid[:5]}"
+                )
+    else:
+        router_tok, router = load_classifier(args.router_dir, device)
+        risk_tok, risk_model = load_classifier(args.risk_scorer_dir, device)
+        if args.risk_contract == "fullpaper_v1":
+            require_fullpaper_axis_order(router.config)
+            require_fullpaper_axis_order(risk_model.config)
+        train_rows = enrich_rows(
+            read_jsonl(args.train_file), router, router_tok, risk_model, risk_tok, device, args, "train"
+        )
+        valid_rows = enrich_rows(
+            read_jsonl(args.valid_file), router, router_tok, risk_model, risk_tok, device, args, "valid"
+        )
     write_jsonl(train_rows, str(out / "risk_tune_train_enriched.jsonl"))
     write_jsonl(valid_rows, str(out / "risk_tune_valid_enriched.jsonl"))
+    if args.enrich_only:
+        manifest = {
+            "status": "complete_enrichment_only_no_denoiser_model_loaded",
+            "risk_contract": args.risk_contract,
+            "zt_strategy": args.zt_strategy,
+            "router_dir": str(Path(args.router_dir).resolve()),
+            "risk_scorer_dir": str(Path(args.risk_scorer_dir).resolve()),
+            "train_rows": len(train_rows),
+            "valid_rows": len(valid_rows),
+            "optimizer_steps": 0,
+            "settings": vars(args),
+        }
+        (out / "enrichment_manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        print(json.dumps(manifest, ensure_ascii=False, indent=2))
+        return
     train_rows = oversample_high_risk(train_rows, args.risk_oversample_threshold, args.risk_oversample_factor)
 
     tokenizer = load_fullpaper_tokenizer(args.init_adapter_dir)
@@ -355,6 +410,7 @@ def main():
         shuffle=True,
         collate_fn=collator,
         num_workers=args.num_workers,
+        generator=torch.Generator().manual_seed(args.seed),
     )
     valid_loader = DataLoader(
         valid_ds,

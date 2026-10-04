@@ -160,7 +160,11 @@ def main():
         default="sft_plain",
         help="Prompt style used by the first-stage SFT adapter.",
     )
-    ap.add_argument("--zt_strategy", choices=["threshold", "staged", "staged_risk", "risk_tag"], default="staged_risk")
+    ap.add_argument(
+        "--zt_strategy",
+        choices=["threshold", "staged", "staged_risk", "risk_tag", "no_mask"],
+        default="staged_risk",
+    )
     ap.add_argument("--T", type=int, default=4)
     ap.add_argument("--timestep", type=int, default=3)
     ap.add_argument("--risk_threshold", type=float, default=0.35)
@@ -237,9 +241,10 @@ def main():
         existing_sft = clean_text(get_field(row, args.sft_response_field, "professor_peft_response", "peft_response"))
         if args.reuse_sft_response and existing_sft:
             sft_response = existing_sft
+            sft_generation = raw.get("sft_generation")
         else:
             model.set_adapter("sft")
-            sft_raw, sft_response = generate_response(
+            sft_raw, sft_response, sft_generation = generate_response(
                 model,
                 tokenizer,
                 build_sft_prompt(tokenizer, row),
@@ -268,6 +273,7 @@ def main():
         z_t_infos = []
         denoiser_raw = ""
         denoiser_response = ""
+        denoiser_generation = None
         den_metrics = None
         accepted = False
         reject_reason = None
@@ -294,7 +300,7 @@ def main():
             risk_row["z_t_from_sft"] = z_t
             risk_row["g_sft"] = sft_metrics["g"]
             model.set_adapter("risk")
-            denoiser_raw, denoiser_response = generate_response(
+            denoiser_raw, denoiser_response, denoiser_generation = generate_response(
                 model,
                 tokenizer,
                 build_risk_tune_prompt(tokenizer, risk_row),
@@ -335,10 +341,12 @@ def main():
             {
                 "sft_response_raw": sft_raw,
                 "sft_response": sft_response,
+                "sft_generation": sft_generation,
                 "z_t_from_sft": z_t,
                 "z_t_from_sft_infos": z_t_infos,
                 "denoiser_response_raw": denoiser_raw,
                 "denoiser_response": denoiser_response,
+                "denoiser_generation": denoiser_generation,
                 "final_response": final_response,
                 "used_denoiser": bool(call_denoiser),
                 "denoiser_call_reason": call_reason,
@@ -397,6 +405,12 @@ def main():
         "settings": vars(args),
         "denoiser_called": len(used),
         "denoiser_accepted": len(accepted),
+        "generation_completion": {
+            "sft_length_limit_reached": sum(bool((row.get("sft_generation") or {}).get("length_limit_reached")) for row in outs),
+            "denoiser_length_limit_reached": sum(bool((row.get("denoiser_generation") or {}).get("length_limit_reached")) for row in outs),
+            "denoiser_eos_reached": sum(bool((row.get("denoiser_generation") or {}).get("eos_reached")) for row in outs),
+            "denoiser_source_input_truncated": sum(bool((row.get("denoiser_generation") or {}).get("source_input_truncated")) for row in outs),
+        },
         "runtime_seconds": time.monotonic() - started,
         "peak_allocated_cuda_bytes": torch.cuda.max_memory_allocated() if torch.cuda.is_available() else 0,
         "source_span_offsets_transferred_to_sft_output": False,

@@ -31,6 +31,7 @@ DEFAULT_PRODUCTION = ROOT / "data/fullpaper_acl_pipeline/production_run_train100
 DEFAULT_PRIOR = Path(str(DEFAULT_PRODUCTION) + "_provisional_corrected_v2_20260926/review_ledger.jsonl")
 DEFAULT_CODEX = ROOT / "data/fullpaper_acl_pipeline/codex_clean_candidate_review_batch20_v2_20260926/cumulative_ai_review_ledger.jsonl"
 VERSION = "production-reuse-adjudicated-export-v2-20261001"
+REVIEWED_VERSION = "production-reuse-reviewed-export-v2-20261004"
 CATEGORIES = (
     "reusable", "exclude_original_answer", "regenerate_candidate", "unresolved",
 )
@@ -48,6 +49,95 @@ def write_jsonl(path: Path, values: list[dict[str, Any]]) -> None:
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def validate_scoped_review_identity(
+    review: dict[str, Any], accepted_by_id: dict[str, dict[str, Any]],
+) -> None:
+    canonical_id = review["canonical_id"]
+    if canonical_id not in accepted_by_id:
+        raise RuntimeError(f"Scoped review ID is absent from production: {canonical_id}")
+    side = review["side"]
+    if side not in {"clean", "candidate"}:
+        raise RuntimeError(f"Invalid scoped review side: {canonical_id}: {side}")
+    source = accepted_by_id[canonical_id]
+    text = source["clean_response" if side == "clean" else "corrupted_response"]
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    if digest != review["source_response_sha256"]:
+        raise RuntimeError(f"Scoped review response hash mismatch: {canonical_id}: {side}")
+    span = review.get("span", "")
+    if span and span not in text:
+        raise RuntimeError(f"Scoped review exact span mismatch: {canonical_id}: {side}")
+
+
+def apply_pair_review_overrides(
+    decisions: list[dict[str, Any]], review_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    exclusions = {
+        row["canonical_id"]: row for row in review_rows
+        if row["action"] == "exclude_pair"
+    }
+    output = []
+    for decision in decisions:
+        review = exclusions.get(decision["canonical_id"])
+        if review is None:
+            output.append(decision)
+            continue
+        output.append({
+            **decision,
+            "reuse_disposition": "exclude_original_answer",
+            "clean_assessment": "issue",
+            "pair_assessment": "not_applicable",
+            "decision_source": review["review_source"],
+            "decision_evidence": [review["reason"]],
+            "superseded_decision": {
+                "reuse_disposition": decision["reuse_disposition"],
+                "clean_assessment": decision["clean_assessment"],
+                "pair_assessment": decision["pair_assessment"],
+                "decision_source": decision["decision_source"],
+                "decision_evidence": decision["decision_evidence"],
+            },
+        })
+    return output
+
+
+def apply_annotation_review_overrides(
+    annotation_ledger: list[dict[str, Any]], review_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    retained = list(annotation_ledger)
+    masked: list[dict[str, Any]] = []
+    applications: list[dict[str, Any]] = []
+    for review in review_rows:
+        if review["action"] != "mask_scorer_label":
+            applications.append({**review, "application_status": "recorded_no_label_change"})
+            continue
+        matches = [
+            item for item in retained
+            if item["canonical_id"] == review["canonical_id"]
+            and item["side"] == review["side"]
+            and item["axis"] == review["axis"]
+            and item["text"] == review["span"]
+            and item["source_sha256"] == review["source_response_sha256"]
+            and item["label"] == review["previous_label"]
+        ]
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"Scoped label review expected one annotation, found {len(matches)}: "
+                f"{review['canonical_id']} / {review['axis']}"
+            )
+        target = matches[0]
+        retained.remove(target)
+        masked.append({
+            **target,
+            "resolution": "unknown_scoped_case_review",
+            "review_source": review["review_source"],
+            "review_reason": review["reason"],
+            "previous_label": target["label"],
+            "new_label": None,
+            "label_mask": False,
+        })
+        applications.append({**review, "application_status": "masked_to_unknown"})
+    return retained, masked, applications
 
 
 def classify_one(
@@ -359,6 +449,14 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--tokenizer-dir", required=True)
     parser.add_argument("--max-length", type=int, default=512)
+    parser.add_argument(
+        "--scoped-review-ledger",
+        help="Optional hash-bound pair/label decisions applied after the preserved QC adjudication.",
+    )
+    parser.add_argument(
+        "--first-experiment-approved", action="store_true",
+        help="Record explicit authorization for this frozen export to feed the first experiment.",
+    )
     args = parser.parse_args()
     production, output = Path(args.production_dir).resolve(), Path(args.output_dir).resolve()
     if output.exists():
@@ -436,6 +534,10 @@ def main() -> None:
             }
     accepted = [replacement_by_id.get(row["canonical_id"], row) for row in immutable_accepted]
     accepted_by_id = {row["canonical_id"]: row for row in accepted}
+    scoped_review_path = Path(args.scoped_review_ledger).resolve() if args.scoped_review_ledger else None
+    scoped_review_rows = rows(scoped_review_path) if scoped_review_path else []
+    for review in scoped_review_rows:
+        validate_scoped_review_identity(review, accepted_by_id)
     warning_ids = {row["canonical_id"] for row in rows(production / "qwen27_clean_target_suspicious.jsonl")}
     held_ids = {canonical_id for canonical_id, row in prior.items() if row["clean_disposition"] == "held"}
 
@@ -444,6 +546,7 @@ def main() -> None:
         codex=codex.get(row["canonical_id"]), warning=row["canonical_id"] in warning_ids,
         local=local.get(row["canonical_id"]),
     ) for row in accepted]
+    decisions = apply_pair_review_overrides(decisions, scoped_review_rows)
     if {row["canonical_id"] for row in decisions} != set(accepted_by_id):
         raise RuntimeError("Adjudication coverage mismatch")
     reusable_ids = {row["canonical_id"] for row in decisions if row["reuse_disposition"] == "reusable"}
@@ -565,6 +668,14 @@ def main() -> None:
         annotations_by_id[canonical_id].extend(accepted_annotations)
         annotation_ledger.extend(accepted_annotations)
 
+    annotation_ledger, review_masked_annotations, review_application_ledger = (
+        apply_annotation_review_overrides(annotation_ledger, scoped_review_rows)
+    )
+    annotations_by_id = defaultdict(list)
+    for annotation in annotation_ledger:
+        annotations_by_id[annotation["canonical_id"]].append(annotation)
+    excluded_annotations.extend(review_masked_annotations)
+
     reusable_sft = corrected_sft["train"] + corrected_sft["valid"]
     scorer_raw = raw_scorer_rows(reusable_sft, annotations_by_id)
     # Keep candidate-level annotations until this point so opposing reviewed
@@ -669,6 +780,8 @@ def main() -> None:
         "scorer_deduplication_ledger.jsonl": dedup_ledger,
         "legacy_collision_accounting.jsonl": legacy_collision_ledger,
         "representative_examples.jsonl": representative_rows(decisions, accepted_by_id),
+        "scoped_review_ledger.jsonl": scoped_review_rows,
+        "scoped_review_application_ledger.jsonl": review_application_ledger,
     }
     for name, value in outputs.items():
         write_jsonl(output / name, value)
@@ -684,7 +797,12 @@ def main() -> None:
         )
     }
     manifest = {
-        "version": VERSION, "status": "provisional_reuse_export_complete_not_training_approved",
+        "version": REVIEWED_VERSION if scoped_review_rows else VERSION,
+        "status": (
+            "frozen_for_first_experiment_not_clinically_adjudicated"
+            if args.first_experiment_approved
+            else "provisional_reuse_export_complete_not_training_approved"
+        ),
         "production_dir": str(production), "production_artifact_sha256": source_hashes,
         "review_artifact_sha256": {
             "prior_review_ledger": sha256_file(prior_path), "codex_review_ledger": sha256_file(codex_path),
@@ -692,6 +810,7 @@ def main() -> None:
             "replacement_production": {
                 "path": str(replacement_dir), "artifacts": replacement_hashes,
             } if replacement_dir is not None else None,
+            "scoped_review_ledger": sha256_file(scoped_review_path) if scoped_review_path else None,
         },
         "policy": {
             "pair_and_scorer_adjudicated_separately": True,
@@ -744,9 +863,22 @@ def main() -> None:
         },
         "readiness": {
             "content_reuse_export_complete": True,
-            "training_ready": False,
-            "reason": "Reuse adjudication is complete, but this task does not grant main-training approval.",
+            "training_ready": bool(args.first_experiment_approved),
+            "scope": "first_backbone_experiment",
+            "clinical_expert_adjudication": False,
+            "reason": (
+                "Explicit user authorization for the first experiment; six-case assistant review is not clinical-expert adjudication."
+                if args.first_experiment_approved
+                else "Reuse adjudication is complete, but this task does not grant main-training approval."
+            ),
             "usable_scorer_labels_remain": any(any(value is not None for value in row["labels"].values()) for row in scorer_rows),
+        },
+        "scoped_review": {
+            "rows": len(scoped_review_rows),
+            "excluded_pairs": sum(row["action"] == "exclude_pair" for row in scoped_review_rows),
+            "masked_labels": sum(row["action"] == "mask_scorer_label" for row in scoped_review_rows),
+            "note_only_rows": sum(row["action"] == "retain_with_note" for row in scoped_review_rows),
+            "review_source": sorted({row["review_source"] for row in scoped_review_rows}),
         },
         "outputs": {name: {"rows": len(value), "sha256": sha256_file(output / name)} for name, value in outputs.items()},
     }

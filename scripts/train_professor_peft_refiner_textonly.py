@@ -108,6 +108,7 @@ def main():
     ap.add_argument("--lora_r", type=int, default=8)
     ap.add_argument("--lora_alpha", type=int, default=16)
     ap.add_argument("--lora_dropout", type=float, default=0.05)
+    ap.add_argument("--seed", type=int, default=42)
     ap.add_argument(
         "--prompt_style",
         choices=["professor", "sft_plain"],

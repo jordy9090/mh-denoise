@@ -1,7 +1,10 @@
 from scripts.build_production_reuse_export import (
+    apply_annotation_review_overrides,
+    apply_pair_review_overrides,
     classify_one,
     deduplicate_scorer_rows,
     router_labels_for_pair,
+    validate_scoped_review_identity,
 )
 import json
 
@@ -199,6 +202,51 @@ def test_scorer_dedup_preserves_one_non_null_label_and_sources():
     assert len(deduped) == 1 and len(ledger) == 1
     assert deduped[0]["labels"]["empathy"] == 1
     assert len(deduped[0]["source_provenance"]) == 2
+
+
+def test_scoped_pair_review_preserves_superseded_decision():
+    decision = {
+        "canonical_id": "qa-x", "reuse_disposition": "reusable",
+        "clean_assessment": "suitable", "pair_assessment": "reusable",
+        "decision_source": "automatic_qc", "decision_evidence": ["old"],
+    }
+    review = {
+        "canonical_id": "qa-x", "action": "exclude_pair",
+        "review_source": "assistant_case_review", "reason": "unsupported clean claim",
+    }
+    updated = apply_pair_review_overrides([decision], [review])[0]
+    assert updated["reuse_disposition"] == "exclude_original_answer"
+    assert updated["superseded_decision"]["reuse_disposition"] == "reusable"
+
+
+def test_scoped_label_review_masks_only_exact_reviewed_annotation():
+    annotation = {
+        "canonical_id": "qa-x", "side": "candidate", "axis": "empathy",
+        "text": "This is a setback.", "source_sha256": "response-hash",
+        "label": 0, "resolution": "reviewed_local_support",
+    }
+    review = {
+        "canonical_id": "qa-x", "side": "candidate", "axis": "empathy",
+        "span": "This is a setback.", "source_response_sha256": "response-hash",
+        "previous_label": 0, "action": "mask_scorer_label",
+        "review_source": "assistant_case_review", "reason": "rationale contradicts support",
+    }
+    retained, masked, applications = apply_annotation_review_overrides([annotation], [review])
+    assert retained == []
+    assert masked[0]["new_label"] is None and masked[0]["label_mask"] is False
+    assert applications[0]["application_status"] == "masked_to_unknown"
+
+
+def test_scoped_review_identity_is_hash_and_exact_span_bound():
+    import hashlib
+
+    response = "I hear you. This is a setback."
+    accepted = {"qa-x": {"clean_response": "clean", "corrupted_response": response}}
+    review = {
+        "canonical_id": "qa-x", "side": "candidate", "span": "This is a setback.",
+        "source_response_sha256": hashlib.sha256(response.encode()).hexdigest(),
+    }
+    validate_scoped_review_identity(review, accepted)
 
 
 def _valid_paired_payload():

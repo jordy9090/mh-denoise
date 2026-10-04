@@ -295,6 +295,8 @@ def build_training_args(args):
         remove_unused_columns=False,
         dataloader_num_workers=args.num_workers,
         gradient_checkpointing=True,
+        seed=args.seed,
+        data_seed=args.seed,
     )
     try:
         return TrainingArguments(eval_strategy="steps", **kwargs)
@@ -325,6 +327,7 @@ def main():
     ap.add_argument("--lora_r", type=int, default=8)
     ap.add_argument("--lora_alpha", type=int, default=16)
     ap.add_argument("--lora_dropout", type=float, default=0.05)
+    ap.add_argument("--seed", type=int, default=42)
     ap.add_argument(
         "--prompt_style",
         choices=["professor", "sft_plain"],

@@ -85,7 +85,7 @@ def main():
     for ex in tqdm(rows):
         row = canonical_example(ex)
         prompt = build_sft_prompt(tokenizer, row)
-        raw, cleaned = generate_response(
+        raw, cleaned, generation = generate_response(
             model,
             tokenizer,
             prompt,
@@ -98,6 +98,7 @@ def main():
         out = dict(row)
         out["sft_response_raw"] = raw
         out["sft_response"] = cleaned
+        out["sft_generation"] = generation
         out["sft_prompt_style"] = args.sft_prompt_style
         out["method"] = "sft_refiner_output_for_risk_tuning"
         outs.append(out)
@@ -117,6 +118,11 @@ def main():
         "input": {"path": str(Path(args.input).resolve()), "sha256": file_sha256(args.input), "rows": len(rows)},
         "output": {"path": str(Path(args.output).resolve()), "sha256": file_sha256(args.output), "rows": len(outs)},
         "settings": vars(args),
+        "generation_completion": {
+            "eos_reached": sum(row["sft_generation"]["eos_reached"] for row in outs),
+            "length_limit_reached": sum(row["sft_generation"]["length_limit_reached"] for row in outs),
+            "source_input_truncated": sum(row["sft_generation"]["source_input_truncated"] for row in outs),
+        },
         "runtime_seconds": time.monotonic() - started,
         "peak_allocated_cuda_bytes": torch.cuda.max_memory_allocated() if torch.cuda.is_available() else 0,
         "source_span_offsets_transferred": False,
