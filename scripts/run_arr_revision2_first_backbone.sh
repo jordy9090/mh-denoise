@@ -158,6 +158,17 @@ run_step scorer_train "$scorer_dir/training_manifest.json" \
   --initialization pretrained_base --output-dir "$scorer_dir" --max-steps "$scorer_steps" \
   --batch-size 8 --learning-rate 1e-5 --seed "$seed"
 
+threshold_file="$run_dir/valid_risk_thresholds.json"
+run_step valid_risk_threshold_selection "$threshold_file" \
+  "$python_bin" scripts/select_arr_valid_risk_thresholds.py \
+  --sft-valid "$data_dir/sft_valid.jsonl" --router-valid "$data_dir/router_valid.jsonl" \
+  --router-dir "$router_dir/final" --scorer-dir "$scorer_dir/final" \
+  --output "$threshold_file" --anchor 0.35
+
+full_threshold="$($python_bin -c 'import json,sys; print(json.load(open(sys.argv[1]))["thresholds"]["full"]["threshold"])' "$threshold_file")"
+without_router_threshold="$($python_bin -c 'import json,sys; print(json.load(open(sys.argv[1]))["thresholds"]["without_router"]["threshold"])' "$threshold_file")"
+without_scorer_threshold="$($python_bin -c 'import json,sys; print(json.load(open(sys.argv[1]))["thresholds"]["without_scorer"]["threshold"])' "$threshold_file")"
+
 run_step gemma_sft_train "$sft_dir/training_manifest.json" \
   "$python_bin" scripts/train_professor_peft_refiner_textonly.py \
   --train_file "$data_dir/sft_train.jsonl" --valid_file "$data_dir/sft_valid.jsonl" \
@@ -180,9 +191,10 @@ variants=(mask_on mask_off without_router without_scorer)
 for mode in "${variants[@]}"; do
   strategy="staged_risk"
   component_mode="full"
+  threshold="$full_threshold"
   if [[ "$mode" == "mask_off" ]]; then strategy="no_mask"; fi
-  if [[ "$mode" == "without_router" ]]; then component_mode="without_router"; fi
-  if [[ "$mode" == "without_scorer" ]]; then strategy="no_mask"; component_mode="without_scorer"; fi
+  if [[ "$mode" == "without_router" ]]; then component_mode="without_router"; threshold="$without_router_threshold"; fi
+  if [[ "$mode" == "without_scorer" ]]; then strategy="no_mask"; component_mode="without_scorer"; threshold="$without_scorer_threshold"; fi
   proposed_dir="$run_dir/gemma/proposed_${mode}"
   run_step "gemma_${mode}_enrichment" "$proposed_dir/enrichment_manifest.json" \
     "$python_bin" scripts/train_gemma_risk_tune_from_sft.py --base_model "$gemma_dir" \
@@ -190,8 +202,8 @@ for mode in "${variants[@]}"; do
     --valid_file "$generation_dir/sft_valid_outputs.jsonl" --output_dir "$proposed_dir" \
     --router_dir "$router_dir/final" --risk_scorer_dir "$scorer_dir/final" --risk_contract fullpaper_v1 \
     --component_mode "$component_mode" \
-    --zt_strategy "$strategy" --risk_threshold 0.35 --mask_threshold 0.35 --timestep 3 \
-    --lambda_y 0 --risk_oversample_threshold 0.35 --risk_oversample_factor 2 --seed "$seed" --enrich_only
+    --zt_strategy "$strategy" --risk_threshold "$threshold" --mask_threshold "$threshold" --timestep 3 \
+    --lambda_y 0 --risk_oversample_threshold "$threshold" --risk_oversample_factor 2 --seed "$seed" --enrich_only
   for split in train valid; do
     audit_dir="$proposed_dir/prompt_audit_${split}"
     run_step "gemma_${mode}_prompt_audit_${split}" "$audit_dir/manifest.json" \
@@ -259,9 +271,10 @@ require_generation_complete "$generation_dir/dpo_valid_outputs.manifest.json" si
 for mode in "${variants[@]}"; do
   strategy="staged_risk"
   component_mode="full"
+  threshold="$full_threshold"
   if [[ "$mode" == "mask_off" ]]; then strategy="no_mask"; fi
-  if [[ "$mode" == "without_router" ]]; then component_mode="without_router"; fi
-  if [[ "$mode" == "without_scorer" ]]; then strategy="no_mask"; component_mode="without_scorer"; fi
+  if [[ "$mode" == "without_router" ]]; then component_mode="without_router"; threshold="$without_router_threshold"; fi
+  if [[ "$mode" == "without_scorer" ]]; then strategy="no_mask"; component_mode="without_scorer"; threshold="$without_scorer_threshold"; fi
   proposed_dir="$run_dir/gemma/proposed_${mode}"
   run_step "gemma_${mode}_train" "$proposed_dir/training_manifest.json" \
     "$python_bin" scripts/train_gemma_risk_tune_from_sft.py --base_model "$gemma_dir" \
@@ -271,8 +284,8 @@ for mode in "${variants[@]}"; do
     --component_mode "$component_mode" \
     --zt_strategy "$strategy" --inputs_pre_enriched --learning_rate 5e-6 --epochs 1 \
     --batch_size 1 --eval_batch_size 1 --grad_accum 8 --max_source_len "$max_source_len" \
-    --max_target_len "$target_len" --lambda_y 0 --risk_oversample_threshold 0.35 --risk_oversample_factor 2 \
-    --risk_threshold 0.35 --mask_threshold 0.35 --eval_every 25 --save_every 100 \
+    --max_target_len "$target_len" --lambda_y 0 --risk_oversample_threshold "$threshold" --risk_oversample_factor 2 \
+    --risk_threshold "$threshold" --mask_threshold "$threshold" --eval_every 25 --save_every 100 \
     --num_workers 0 --enable_gradient_checkpointing --seed "$seed"
   run_step "gemma_${mode}_valid_generation" "$generation_dir/proposed_${mode}_valid_outputs.manifest.json" \
     "$python_bin" scripts/run_gemma_selective_risk_refinement.py --base_model "$gemma_dir" \
@@ -281,7 +294,7 @@ for mode in "${variants[@]}"; do
     --component_mode "$component_mode" \
     --input "$generation_dir/sft_valid_outputs.jsonl" --output "$generation_dir/proposed_${mode}_valid_outputs.jsonl" \
     --reuse_sft_response --sft_response_field sft_response --zt_strategy "$strategy" \
-    --risk_threshold 0.35 --gate_risk_threshold 0.35 --mask_threshold 0.35 \
+    --risk_threshold "$threshold" --gate_risk_threshold "$threshold" --mask_threshold "$threshold" \
     --max_source_len "$max_source_len" --max_new_tokens "$generation_budget" --temperature 0.0 \
     --repetition_penalty 1.15 --no_repeat_ngram_size 4
   require_generation_complete "$generation_dir/proposed_${mode}_valid_outputs.manifest.json" denoiser
