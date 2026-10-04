@@ -53,10 +53,10 @@ def load_base_model(model_name: str, use_4bit: bool):
 
 
 def load_classifier(path: str, device):
-    tok = AutoTokenizer.from_pretrained(path)
+    tok = AutoTokenizer.from_pretrained(path, local_files_only=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token or tok.unk_token
-    model = AutoModelForSequenceClassification.from_pretrained(path).to(device).eval()
+    model = AutoModelForSequenceClassification.from_pretrained(path, local_files_only=True).to(device).eval()
     for p in model.parameters():
         p.requires_grad_(False)
     return tok, model
@@ -149,6 +149,11 @@ def main():
     ap.add_argument("--router_dir", required=True)
     ap.add_argument("--risk_scorer_dir", required=True)
     ap.add_argument("--risk_contract", choices=["legacy", "fullpaper_v1"], default="legacy")
+    ap.add_argument(
+        "--component_mode",
+        choices=["full", "without_router", "without_scorer"],
+        default="full",
+    )
     ap.add_argument("--input", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--max_examples", type=int, default=None)
@@ -191,6 +196,8 @@ def main():
     ap.add_argument("--no_repeat_ngram_size", type=int, default=4)
     ap.add_argument("--no_4bit", action="store_true")
     args = ap.parse_args()
+    if args.component_mode == "without_scorer" and args.zt_strategy != "no_mask":
+        raise ValueError("without_scorer requires --zt_strategy no_mask because span masking is removed")
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
     configure_risk_contract(args.risk_contract)
@@ -201,10 +208,15 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     focus_idx = DIMS.index(args.gate_focus_aspect)
-    router_tok, router = load_classifier(args.router_dir, device)
-    risk_tok, risk_model = load_classifier(args.risk_scorer_dir, device)
-    if args.risk_contract == "fullpaper_v1":
+    router_tok, router = (None, None)
+    risk_tok, risk_model = (None, None)
+    if args.component_mode != "without_router":
+        router_tok, router = load_classifier(args.router_dir, device)
+    if args.component_mode != "without_scorer":
+        risk_tok, risk_model = load_classifier(args.risk_scorer_dir, device)
+    if args.risk_contract == "fullpaper_v1" and router is not None:
         require_fullpaper_axis_order(router.config)
+    if args.risk_contract == "fullpaper_v1" and risk_model is not None:
         require_fullpaper_axis_order(risk_model.config)
 
     tokenizer = load_fullpaper_tokenizer(args.sft_adapter_dir)
@@ -217,6 +229,7 @@ def main():
     print("risk_adapter_dir:", args.risk_adapter_dir)
     print("router_dir:", args.router_dir)
     print("risk_scorer_dir:", args.risk_scorer_dir)
+    print("risk component mode:", args.component_mode)
     print("sft_prompt_style:", args.sft_prompt_style)
     print("gate_strategy:", args.gate_strategy)
     print("gate_focus_aspect:", args.gate_focus_aspect)
@@ -265,6 +278,7 @@ def main():
             device,
             router_max_len=args.router_max_len,
             risk_max_len=args.risk_max_len,
+            component_mode=args.component_mode,
         )
         sft_metrics = response_metrics(q, sft_response, sft_score, focus_idx)
         call_denoiser, call_reason = should_call_denoiser(sft_metrics, args)
@@ -283,7 +297,7 @@ def main():
         if call_denoiser:
             z_t, z_t_infos = make_zt_from_response(
                 sft_response,
-                sft_metrics["g"],
+                sft_score["masking_g"],
                 sft_score["risk_vecs"],
                 strategy=args.zt_strategy,
                 t=args.timestep,
@@ -299,6 +313,8 @@ def main():
             risk_row["sft_response"] = sft_response
             risk_row["z_t_from_sft"] = z_t
             risk_row["g_sft"] = sft_metrics["g"]
+            risk_row["aspect_conditioning_status"] = sft_score["aspect_conditioning_status"]
+            risk_row["risk_component_mode"] = args.component_mode
             model.set_adapter("risk")
             denoiser_raw, denoiser_response, denoiser_generation = generate_response(
                 model,
@@ -320,6 +336,7 @@ def main():
                 device,
                 router_max_len=args.router_max_len,
                 risk_max_len=args.risk_max_len,
+                component_mode=args.component_mode,
             )
             den_metrics = response_metrics(
                 q,
@@ -372,6 +389,8 @@ def main():
                 "span_risks_sft": sft_metrics["span_risks"],
                 "span_risks_denoiser": den_metrics["span_risks"] if den_metrics else [],
                 "zt_strategy": args.zt_strategy,
+                "risk_component_mode": args.component_mode,
+                "aspect_conditioning_status": sft_score["aspect_conditioning_status"],
                 "sft_prompt_style": args.sft_prompt_style,
                 "gate_strategy": args.gate_strategy,
                 "gate_focus_aspect": args.gate_focus_aspect,
@@ -400,6 +419,11 @@ def main():
         "risk_adapter_dir": str(Path(args.risk_adapter_dir).resolve()),
         "router_dir": str(Path(args.router_dir).resolve()),
         "risk_scorer_dir": str(Path(args.risk_scorer_dir).resolve()),
+        "component_mode": args.component_mode,
+        "active_risk_components": {
+            "router": args.component_mode != "without_router",
+            "scorer": args.component_mode != "without_scorer",
+        },
         "input": {"path": str(Path(args.input).resolve()), "sha256": file_sha256(args.input), "rows": len(rows)},
         "output": {"path": str(Path(args.output).resolve()), "sha256": file_sha256(args.output), "rows": len(outs)},
         "settings": vars(args),

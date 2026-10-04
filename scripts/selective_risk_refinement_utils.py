@@ -225,10 +225,16 @@ def build_risk_tune_user_content(ex: Dict) -> str:
     u = clean_text(get_field(ex, "unsafe_response", "corrupted_response", "bad_response"))
     sft = clean_text(get_field(ex, "sft_response", "professor_peft_response", "peft_response"))
     z_t = clean_text(get_field(ex, "z_t_from_sft", "risk_corrupted_sft_response", "z_t"))
-    g = ex.get("g_sft") or ex.get("g") or [0.0] * len(DIMS)
-    if isinstance(g, dict):
-        g = [float(g.get(dim, 0.0)) for dim in DIMS]
-    g_text = format_g(g)
+    aspect_status = ex.get("aspect_conditioning_status", "available")
+    g = ex.get("g_sft") or ex.get("g") or []
+    if aspect_status == "unavailable_without_router":
+        g_text = "unavailable (Router removed)"
+    else:
+        if isinstance(g, dict):
+            g = [float(g.get(dim, 0.0)) for dim in DIMS]
+        if not g:
+            g = [0.0] * len(DIMS)
+        g_text = format_g(g)
     risk_tag_instruction = ""
     if "[Risk:" in z_t or "<RISK" in z_t:
         risk_tag_instruction = (
@@ -443,18 +449,41 @@ def score_candidate(
     device,
     router_max_len: int = 512,
     risk_max_len: int = 384,
+    component_mode: str = "full",
 ) -> Dict:
     response = clean_text(response)
-    g = predict_g(router, router_tok, q, response, device, max_len=router_max_len)
     spans = split_sentences(response) or ([response] if response else [])
-    risk_vecs = score_spans(risk_model, risk_tok, q, spans, device, max_len=risk_max_len)
+    if component_mode not in {"full", "without_router", "without_scorer"}:
+        raise ValueError(f"Unsupported risk component mode: {component_mode}")
+    g = [] if component_mode == "without_router" else predict_g(
+        router, router_tok, q, response, device, max_len=router_max_len
+    )
+    risk_vecs = [] if component_mode == "without_scorer" else score_spans(
+        risk_model, risk_tok, q, spans, device, max_len=risk_max_len
+    )
     infos = []
-    risk_score = 0.0
-    for span, rv in zip(spans, risk_vecs):
-        risk, dim = top_risk_dim(g, rv)
-        risk_score = max(risk_score, risk)
-        infos.append({"span": span, "risk_vec": rv, "r_l_g": risk, "top_dim": dim})
-    return {"g": g, "spans": spans, "risk_vecs": risk_vecs, "span_risks": infos, "risk_score": float(risk_score)}
+    if component_mode == "without_scorer":
+        risk_score = max(g, default=0.0)
+        masking_g = list(g)
+    else:
+        masking_g = [1.0] * len(DIMS) if component_mode == "without_router" else list(g)
+        risk_score = 0.0
+        for span, rv in zip(spans, risk_vecs):
+            risk, dim = top_risk_dim(masking_g, rv)
+            risk_score = max(risk_score, risk)
+            infos.append({"span": span, "risk_vec": rv, "r_l_g": risk, "top_dim": dim})
+    return {
+        "g": g,
+        "masking_g": masking_g,
+        "spans": spans,
+        "risk_vecs": risk_vecs,
+        "span_risks": infos,
+        "risk_score": float(risk_score),
+        "component_mode": component_mode,
+        "aspect_conditioning_status": (
+            "unavailable_without_router" if component_mode == "without_router" else "available"
+        ),
+    }
 
 
 def count_bad_safety_patterns(text: str) -> int:

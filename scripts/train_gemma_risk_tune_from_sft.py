@@ -56,10 +56,10 @@ def load_base_model(model_name: str, use_4bit: bool):
 
 
 def load_classifier(path: str, device):
-    tok = AutoTokenizer.from_pretrained(path)
+    tok = AutoTokenizer.from_pretrained(path, local_files_only=True)
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token or tok.unk_token
-    model = AutoModelForSequenceClassification.from_pretrained(path).to(device).eval()
+    model = AutoModelForSequenceClassification.from_pretrained(path, local_files_only=True).to(device).eval()
     for p in model.parameters():
         p.requires_grad_(False)
     return tok, model
@@ -87,10 +87,11 @@ def enrich_rows(rows: List[Dict], router, router_tok, risk_model, risk_tok, devi
             device,
             router_max_len=args.router_max_len,
             risk_max_len=args.risk_max_len,
+            component_mode=args.component_mode,
         )
         z_t, infos = make_zt_from_response(
             sft_response,
-            score["g"],
+            score["masking_g"],
             score["risk_vecs"],
             strategy=args.zt_strategy,
             t=args.timestep,
@@ -104,6 +105,8 @@ def enrich_rows(rows: List[Dict], router, router_tok, risk_model, risk_tok, devi
         )
 
         row["g_sft"] = score["g"]
+        row["aspect_conditioning_status"] = score["aspect_conditioning_status"]
+        row["risk_component_mode"] = args.component_mode
         row["sft_risk_score"] = score["risk_score"]
         row["sft_span_risks"] = score["span_risks"]
         row["z_t_from_sft"] = z_t
@@ -258,6 +261,11 @@ def main():
     ap.add_argument("--risk_scorer_dir", required=True)
     ap.add_argument("--risk_contract", choices=["legacy", "fullpaper_v1"], default="legacy")
     ap.add_argument(
+        "--component_mode",
+        choices=["full", "without_router", "without_scorer"],
+        default="full",
+    )
+    ap.add_argument(
         "--zt_strategy",
         choices=["threshold", "staged", "staged_risk", "risk_tag", "no_mask"],
         default="staged_risk",
@@ -304,6 +312,8 @@ def main():
     args = ap.parse_args()
     if args.enrich_only and args.inputs_pre_enriched:
         raise ValueError("--enrich_only and --inputs_pre_enriched are mutually exclusive")
+    if args.component_mode == "without_scorer" and args.zt_strategy != "no_mask":
+        raise ValueError("without_scorer requires --zt_strategy no_mask because span masking is removed")
     configure_risk_contract(args.risk_contract)
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -326,6 +336,7 @@ def main():
                 row.get("canonical_id")
                 for row in source_rows
                 if row.get("zt_strategy") != args.zt_strategy
+                or row.get("risk_component_mode") != args.component_mode
                 or "z_t_from_sft" not in row
                 or "g_sft" not in row
             ]
@@ -334,10 +345,15 @@ def main():
                     f"{split_name} pre-enriched rows do not match z_t mode {args.zt_strategy}: {invalid[:5]}"
                 )
     else:
-        router_tok, router = load_classifier(args.router_dir, device)
-        risk_tok, risk_model = load_classifier(args.risk_scorer_dir, device)
-        if args.risk_contract == "fullpaper_v1":
+        router_tok, router = (None, None)
+        risk_tok, risk_model = (None, None)
+        if args.component_mode != "without_router":
+            router_tok, router = load_classifier(args.router_dir, device)
+        if args.component_mode != "without_scorer":
+            risk_tok, risk_model = load_classifier(args.risk_scorer_dir, device)
+        if args.risk_contract == "fullpaper_v1" and router is not None:
             require_fullpaper_axis_order(router.config)
+        if args.risk_contract == "fullpaper_v1" and risk_model is not None:
             require_fullpaper_axis_order(risk_model.config)
         train_rows = enrich_rows(
             read_jsonl(args.train_file), router, router_tok, risk_model, risk_tok, device, args, "train"
@@ -352,6 +368,11 @@ def main():
             "status": "complete_enrichment_only_no_denoiser_model_loaded",
             "risk_contract": args.risk_contract,
             "zt_strategy": args.zt_strategy,
+            "component_mode": args.component_mode,
+            "active_risk_components": {
+                "router": args.component_mode != "without_router",
+                "scorer": args.component_mode != "without_scorer",
+            },
             "router_dir": str(Path(args.router_dir).resolve()),
             "risk_scorer_dir": str(Path(args.risk_scorer_dir).resolve()),
             "train_rows": len(train_rows),
@@ -376,6 +397,7 @@ def main():
     print("init adapter:", args.init_adapter_dir)
     print("router:", args.router_dir)
     print("risk scorer:", args.risk_scorer_dir)
+    print("risk component mode:", args.component_mode)
     print("load_in_4bit:", use_4bit)
     print("zt_strategy:", args.zt_strategy, "timestep:", args.timestep)
     print("lambda_y:", args.lambda_y, "lr:", args.learning_rate)
@@ -477,6 +499,11 @@ def main():
         "base_model": str(Path(args.base_model).resolve()),
         "init_adapter_dir": str(Path(args.init_adapter_dir).resolve()),
         "risk_contract": args.risk_contract,
+        "component_mode": args.component_mode,
+        "active_risk_components": {
+            "router": args.component_mode != "without_router",
+            "scorer": args.component_mode != "without_scorer",
+        },
         "train_source_rows": len(read_jsonl(args.train_file)),
         "valid_source_rows": len(read_jsonl(args.valid_file)),
         "train_enriched_rows_before_oversampling": len(read_jsonl(str(out / "risk_tune_train_enriched.jsonl"))),

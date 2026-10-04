@@ -2,15 +2,24 @@
 set -euo pipefail
 
 repo_dir="/home/user/hsoh/mh-denoise"
-gemma_config="/home/user/.cache/huggingface/hub/models--google--gemma-4-E4B-it/snapshots/ee0ef6023621cff504d758262d4e04895a5af4a2/config.json"
-risk_config="/home/user/.cache/huggingface/hub/models--bert-base-uncased/snapshots/86b5e0934494bd15c9632b12f734a8a67f723594/config.json"
+asset_verification="$repo_dir/data/fullpaper_acl_pipeline/arr_first_run_20261004/model_assets_verified.json"
 previous_state=""
 
 cd "$repo_dir"
 while true; do
   missing=()
-  [[ -f "$gemma_config" ]] || missing+=("gemma_revision")
-  [[ -f "$risk_config" ]] || missing+=("bert_base_revision")
+  if [[ ! -f "$asset_verification" ]]; then
+    missing+=("verified_model_assets_and_length_contract")
+  elif ! python - "$asset_verification" <<'PY' >/dev/null 2>&1
+import json
+import sys
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+assert payload.get("status") == "verified_complete_pinned_assets_and_length_contract"
+assert payload.get("all_context_checks_within_limit") is True
+PY
+  then
+    missing+=("valid_model_asset_verification")
+  fi
   gpu_pids="$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits | sed '/^[[:space:]]*$/d' | paste -sd, -)"
   state="missing=${missing[*]:-none};gpu_pids=${gpu_pids:-none}"
   if [[ "$state" != "$previous_state" ]]; then
