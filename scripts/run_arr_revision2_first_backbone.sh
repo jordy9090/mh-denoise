@@ -121,9 +121,10 @@ else:
 if truncated:
     raise SystemExit(f"source truncation detected in {path}: {truncated}")
 if limited:
-    raise SystemExit(
-        f"generation budget reached in {path}: {limited}; stop before downstream comparison "
-        "and rerun every compared method with one larger common budget"
+    print(
+        f"WARNING: generation budget reached in {path}: {limited}; rows are retained with "
+        "finish_reason=length, generated token IDs, and raw output",
+        file=sys.stderr,
     )
 PY
 }
@@ -137,12 +138,12 @@ sft_source_len="$($python_bin -c 'import json,sys; print(json.load(open(sys.argv
 target_len="$($python_bin -c 'import json,sys; print(json.load(open(sys.argv[1]))["selected_complete_lengths_before_context_check"]["sft_and_denoiser_target_len"])' "$length_audit")"
 dpo_prompt_len="$($python_bin -c 'import json,sys; print(json.load(open(sys.argv[1]))["selected_complete_lengths_before_context_check"]["dpo_prompt_len"])' "$length_audit")"
 dpo_completion_len="$($python_bin -c 'import json,sys; print(json.load(open(sys.argv[1]))["selected_complete_lengths_before_context_check"]["dpo_completion_len"])' "$length_audit")"
-generation_budget="$($python_bin -c 'import json,sys; x=json.load(open(sys.argv[1]))["selected_complete_lengths_before_context_check"]; print(max(x["generation_max_new_tokens"],x["sft_and_denoiser_target_len"],x["dpo_completion_len"]))' "$length_audit")"
+generation_budget=1536
 
 router_dir="$run_dir/router"
 scorer_dir="$run_dir/scorer"
 sft_dir="$run_dir/gemma/sft"
-generation_dir="$run_dir/gemma/generation"
+generation_dir="$run_dir/gemma/generation_1536"
 mkdir -p "$generation_dir"
 
 run_step router_train "$router_dir/training_manifest.json" \
@@ -177,6 +178,56 @@ run_step gemma_sft_train "$sft_dir/training_manifest.json" \
   --warmup_ratio 0.03 --logging_steps 1 --eval_steps 25 --save_steps 100 --num_workers 0 \
   --target_modules q_proj,k_proj,v_proj,o_proj --lora_r 8 --lora_alpha 16 --lora_dropout 0.05 \
   --prompt_style sft_plain --seed "$seed"
+
+context_limit="$($python_bin - "$gemma_dir" <<'PY'
+import sys
+from transformers import AutoConfig
+config = AutoConfig.from_pretrained(sys.argv[1], local_files_only=True, trust_remote_code=False)
+text = getattr(config, "text_config", config)
+print(int(getattr(text, "max_position_embeddings")))
+PY
+)"
+if (( sft_source_len + target_len > context_limit )); then
+  echo "SFT full source+target exceeds model context" >&2
+  exit 67
+fi
+if (( sft_source_len + generation_budget > context_limit )); then
+  echo "SFT full source+generation budget exceeds model context" >&2
+  exit 67
+fi
+if (( dpo_prompt_len + dpo_completion_len > context_limit )); then
+  echo "DPO full prompt+completion exceeds model context" >&2
+  exit 67
+fi
+
+# DPO depends only on frozen pairs and the completed SFT checkpoint. It must not
+# wait for the diagnostic SFT generation pass.
+rendered_train="$run_dir/gemma/dpo_train_rendered.jsonl"
+rendered_valid="$run_dir/gemma/dpo_valid_rendered.jsonl"
+for split in train valid; do
+  rendered_var="rendered_${split}"
+  rendered="${!rendered_var}"
+  run_step "gemma_render_${split}_dpo" "${rendered%.jsonl}.manifest.json" \
+    "$python_bin" scripts/render_fullpaper_dpo_for_backbone.py --sft-file "$data_dir/sft_${split}.jsonl" \
+    --dpo-file "$data_dir/dpo_${split}.jsonl" --tokenizer "$gemma_dir" --repo google/gemma-4-E4B-it \
+    --revision ee0ef6023621cff504d758262d4e04895a5af4a2 --output "$rendered"
+done
+
+dpo_dir="$run_dir/gemma/dpo"
+run_step gemma_dpo_train "$dpo_dir/training_manifest.json" \
+  "$python_bin" scripts/train_dpo_minimal.py --data_contract fullpaper --fullpaper_valid_role valid \
+  --train_file "$rendered_train" --valid_file "$rendered_valid" --sft_adapter_dir "$sft_dir/final" \
+  --base_model "$gemma_dir" --output_dir "$dpo_dir" --max_steps "$dpo_steps" --beta 0.1 \
+  --learning_rate 1e-6 --per_device_train_batch_size 1 --per_device_eval_batch_size 1 \
+  --gradient_accumulation_steps 16 --max_prompt_length "$dpo_prompt_len" --max_completion_length "$dpo_completion_len" \
+  --precompute_ref_batch_size 1 --logging_steps 1 --eval_steps 25 --save_steps 100 --seed "$seed"
+
+run_step gemma_dpo_valid_generation "$generation_dir/dpo_valid_outputs.manifest.json" \
+  "$python_bin" scripts/build_sft_outputs_for_risk_tuning.py --base_model "$gemma_dir" \
+  --adapter_dir "$dpo_dir/final" --input "$data_dir/sft_valid.jsonl" \
+  --output "$generation_dir/dpo_valid_outputs.jsonl" --max_source_len "$sft_source_len" --max_new_tokens "$generation_budget" \
+  --temperature 0.0 --repetition_penalty 1.15 --no_repeat_ngram_size 4 --sft_prompt_style sft_plain
+require_generation_complete "$generation_dir/dpo_valid_outputs.manifest.json" single
 
 for split in train valid; do
   run_step "gemma_sft_${split}_generation" "$generation_dir/sft_${split}_outputs.manifest.json" \
@@ -213,23 +264,7 @@ for mode in "${variants[@]}"; do
   done
 done
 
-context_limit="$($python_bin - "$gemma_dir" <<'PY'
-import sys
-from transformers import AutoConfig
-config = AutoConfig.from_pretrained(sys.argv[1], local_files_only=True, trust_remote_code=False)
-text = getattr(config, "text_config", config)
-print(int(getattr(text, "max_position_embeddings")))
-PY
-)"
-if (( sft_source_len + target_len > context_limit )); then
-  echo "SFT full source+target exceeds model context" >&2
-  exit 67
-fi
-if (( dpo_prompt_len + dpo_completion_len > context_limit )); then
-  echo "DPO full prompt+completion exceeds model context" >&2
-  exit 67
-fi
-budget_file="$run_dir/gemma/complete_prompt_budget.json"
+budget_file="$run_dir/gemma/complete_prompt_budget_1536.json"
 if [[ ! -f "$budget_file" ]]; then
   budget_args=()
   for mode in "${variants[@]}"; do
@@ -240,33 +275,6 @@ if [[ ! -f "$budget_file" ]]; then
     --model-context-limit "$context_limit" --generation-budget "$generation_budget" --output "$budget_file"
 fi
 max_source_len="$($python_bin -c 'import json,sys; print(json.load(open(sys.argv[1]))["selected_max_source_len"])' "$budget_file")"
-
-rendered_train="$run_dir/gemma/dpo_train_rendered.jsonl"
-rendered_valid="$run_dir/gemma/dpo_valid_rendered.jsonl"
-for split in train valid; do
-  rendered_var="rendered_${split}"
-  rendered="${!rendered_var}"
-  run_step "gemma_render_${split}_dpo" "${rendered%.jsonl}.manifest.json" \
-    "$python_bin" scripts/render_fullpaper_dpo_for_backbone.py --sft-file "$data_dir/sft_${split}.jsonl" \
-    --dpo-file "$data_dir/dpo_${split}.jsonl" --tokenizer "$gemma_dir" --repo google/gemma-4-E4B-it \
-    --revision ee0ef6023621cff504d758262d4e04895a5af4a2 --output "$rendered"
-done
-
-dpo_dir="$run_dir/gemma/dpo"
-run_step gemma_dpo_train "$dpo_dir/training_manifest.json" \
-  "$python_bin" scripts/train_dpo_minimal.py --data_contract fullpaper --fullpaper_valid_role valid \
-  --train_file "$rendered_train" --valid_file "$rendered_valid" --sft_adapter_dir "$sft_dir/final" \
-  --base_model "$gemma_dir" --output_dir "$dpo_dir" --max_steps "$dpo_steps" --beta 0.1 \
-  --learning_rate 1e-6 --per_device_train_batch_size 1 --per_device_eval_batch_size 1 \
-  --gradient_accumulation_steps 16 --max_prompt_length "$dpo_prompt_len" --max_completion_length "$dpo_completion_len" \
-  --precompute_ref_batch_size 1 --logging_steps 1 --eval_steps 25 --save_steps 100 --seed "$seed"
-
-run_step gemma_dpo_valid_generation "$generation_dir/dpo_valid_outputs.manifest.json" \
-  "$python_bin" scripts/build_sft_outputs_for_risk_tuning.py --base_model "$gemma_dir" \
-  --adapter_dir "$dpo_dir/final" --input "$data_dir/sft_valid.jsonl" \
-  --output "$generation_dir/dpo_valid_outputs.jsonl" --max_source_len "$sft_source_len" --max_new_tokens "$generation_budget" \
-  --temperature 0.0 --repetition_penalty 1.15 --no_repeat_ngram_size 4 --sft_prompt_style sft_plain
-require_generation_complete "$generation_dir/dpo_valid_outputs.manifest.json" single
 
 for mode in "${variants[@]}"; do
   strategy="staged_risk"

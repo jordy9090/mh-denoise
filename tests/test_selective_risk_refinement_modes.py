@@ -51,3 +51,33 @@ def test_without_router_prompt_does_not_inject_zero_aspect_conditioning():
     })
     assert "unavailable (Router removed)" in prompt
     assert "overall_quality=" not in prompt
+
+
+def test_generation_stop_tokens_prefer_model_generation_config():
+    class Object:
+        pass
+
+    model = Object()
+    model.generation_config = Object()
+    model.generation_config.eos_token_id = [1, 106, 50]
+    model.config = Object()
+    model.config.eos_token_id = [1, 106]
+    tokenizer = Object()
+    tokenizer.eos_token_id = 1
+
+    token_ids, source = utils.resolve_generation_eos_token_ids(model, tokenizer)
+    assert token_ids == [1, 106, 50]
+    assert source == "model.generation_config"
+
+
+def test_generation_stop_tokens_fall_back_to_tokenizer():
+    class Object:
+        pass
+
+    model = Object()
+    tokenizer = Object()
+    tokenizer.eos_token_id = 7
+
+    token_ids, source = utils.resolve_generation_eos_token_ids(model, tokenizer)
+    assert token_ids == [7]
+    assert source == "tokenizer"

@@ -512,6 +512,23 @@ def keyword_overlap_ratio(question: str, response: str) -> float:
     return len(q_words & r_words) / max(1, len(q_words))
 
 
+def resolve_generation_eos_token_ids(model, tokenizer):
+    """Return the stop-token contract used by both generation and logging."""
+    candidates = (
+        ("model.generation_config", getattr(getattr(model, "generation_config", None), "eos_token_id", None)),
+        ("model.config", getattr(getattr(model, "config", None), "eos_token_id", None)),
+        ("tokenizer", getattr(tokenizer, "eos_token_id", None)),
+    )
+    for source, value in candidates:
+        if value is None:
+            continue
+        values = [value] if isinstance(value, int) else list(value)
+        token_ids = list(dict.fromkeys(int(token_id) for token_id in values))
+        if token_ids:
+            return token_ids, source
+    return [], "unavailable"
+
+
 @torch.no_grad()
 def generate_response(
     model,
@@ -528,14 +545,16 @@ def generate_response(
         prompt, add_special_tokens=True, truncation=False
     )["input_ids"]
     enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_source_len).to(device)
+    eos_token_ids, termination_token_source = resolve_generation_eos_token_ids(model, tokenizer)
     kwargs = dict(
         **enc,
         max_new_tokens=max_new_tokens,
         repetition_penalty=repetition_penalty,
         no_repeat_ngram_size=no_repeat_ngram_size,
         pad_token_id=tokenizer.pad_token_id,
-        eos_token_id=tokenizer.eos_token_id,
     )
+    if eos_token_ids:
+        kwargs["eos_token_id"] = eos_token_ids[0] if len(eos_token_ids) == 1 else eos_token_ids
     if temperature and temperature > 0:
         kwargs.update({"do_sample": True, "temperature": temperature})
     else:
@@ -544,13 +563,7 @@ def generate_response(
     new_tokens = gen[0][enc["input_ids"].shape[-1] :]
     raw = tokenizer.decode(new_tokens, skip_special_tokens=True)
     generated_token_ids = [int(value) for value in new_tokens.detach().cpu().tolist()]
-    eos_ids = tokenizer.eos_token_id
-    if eos_ids is None:
-        eos_id_set = set()
-    elif isinstance(eos_ids, int):
-        eos_id_set = {eos_ids}
-    else:
-        eos_id_set = {int(value) for value in eos_ids}
+    eos_id_set = set(eos_token_ids)
     eos_reached = bool(generated_token_ids and generated_token_ids[-1] in eos_id_set)
     length_limit_reached = len(generated_token_ids) >= max_new_tokens and not eos_reached
     metadata = {
@@ -560,6 +573,7 @@ def generate_response(
         "generated_token_ids": generated_token_ids,
         "generated_tokens": len(generated_token_ids),
         "eos_token_ids": sorted(eos_id_set),
+        "termination_token_source": termination_token_source,
         "eos_reached": eos_reached,
         "length_limit_reached": length_limit_reached,
         "finish_reason": "eos" if eos_reached else ("length" if length_limit_reached else "other_stop"),
