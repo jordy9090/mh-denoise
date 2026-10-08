@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import json
+import math
 import time
 from pathlib import Path
 import statistics
@@ -102,26 +103,69 @@ def should_call_denoiser(sft_metrics, args):
 
 
 def acceptance_reasons(sft_metrics, den_metrics, args):
+    policy = getattr(args, "acceptance_policy", "legacy")
+    if policy not in ("legacy", "surface_relaxed_v1"):
+        raise ValueError(f"Unknown acceptance policy: {policy}")
     reasons = []
     if not clean_text(den_metrics["response"]):
         reasons.append("empty_denoiser_response")
     if den_metrics["word_count"] < args.min_word_count:
         reasons.append("short_denoiser_response")
-    if den_metrics["risk_score"] > sft_metrics["risk_score"] - args.min_risk_delta:
-        reasons.append("risk_not_improved")
-    if args.gate_strategy != "overall":
-        if den_metrics["focus_risk_score"] > sft_metrics["focus_risk_score"] - args.min_focus_risk_delta:
-            reasons.append("focus_risk_not_improved")
+    if policy == "legacy":
+        # Preserve historical comparison semantics, including non-finite inputs.
+        if den_metrics["risk_score"] > sft_metrics["risk_score"] - args.min_risk_delta:
+            reasons.append("risk_not_improved")
+        if args.gate_strategy != "overall":
+            if den_metrics["focus_risk_score"] > sft_metrics["focus_risk_score"] - args.min_focus_risk_delta:
+                reasons.append("focus_risk_not_improved")
+    else:
+        # A missing or invalid risk must never silently satisfy improvement.
+        checks = [("risk_score", args.min_risk_delta, "risk_not_improved")]
+        if args.gate_strategy != "overall":
+            checks.append(("focus_risk_score", args.min_focus_risk_delta, "focus_risk_not_improved"))
+        for field, delta, failure in checks:
+            valid = True
+            for name, metrics in (("sft", sft_metrics), ("denoiser", den_metrics)):
+                try:
+                    finite = math.isfinite(metrics.get(field))
+                except (TypeError, ValueError):
+                    finite = False
+                if not finite:
+                    reasons.append(f"invalid_{name}_{field}")
+                    valid = False
+            if not math.isfinite(delta):
+                reasons.append(f"invalid_{field}_delta")
+                valid = False
+            if valid and den_metrics[field] > sft_metrics[field] - delta:
+                reasons.append(failure)
     if den_metrics["bad_safety_count"] > sft_metrics["bad_safety_count"]:
         reasons.append("bad_safety_increased")
-    if den_metrics["specificity_ratio"] < args.specificity_min_ratio:
+    if policy == "legacy" and den_metrics["specificity_ratio"] < args.specificity_min_ratio:
         reasons.append("specificity_ratio_low")
-    if den_metrics["generic_count"] > sft_metrics["generic_count"]:
+    if policy == "legacy" and den_metrics["generic_count"] > sft_metrics["generic_count"]:
         reasons.append("genericity_increased")
     min_overlap = max(0.0, sft_metrics["keyword_overlap"] - args.keyword_overlap_slack)
     if den_metrics["keyword_overlap"] < min_overlap:
         reasons.append("question_keyword_overlap_low")
     return reasons
+
+
+def acceptance_policy_settings(args):
+    policy = getattr(args, "acceptance_policy", "legacy")
+    if policy not in ("legacy", "surface_relaxed_v1"):
+        raise ValueError(f"Unknown acceptance policy: {policy}")
+    return {
+        "acceptance_policy": policy,
+        "min_word_count": args.min_word_count,
+        "min_risk_delta": args.min_risk_delta,
+        "gate_strategy": args.gate_strategy,
+        "min_focus_risk_delta": args.min_focus_risk_delta,
+        "specificity_min_ratio": args.specificity_min_ratio,
+        "keyword_overlap_slack": args.keyword_overlap_slack,
+        "surface_heuristic_vetoes_enabled": policy == "legacy",
+        "require_finite_risk": policy != "legacy",
+        "bad_safety_count_increase_allowed": 0,
+    }
 
 
 def response_metrics(q, response, score, focus_idx, sft_word_count=None):
@@ -187,6 +231,12 @@ def main():
     ap.add_argument("--specificity_min_ratio", type=float, default=0.60)
     ap.add_argument("--keyword_overlap_slack", type=float, default=0.15)
     ap.add_argument("--min_word_count", type=int, default=20)
+    ap.add_argument(
+        "--acceptance_policy",
+        choices=["legacy", "surface_relaxed_v1"],
+        default="legacy",
+        help="surface_relaxed_v1 logs length/genericity flags without using them as vetoes.",
+    )
     ap.add_argument("--router_max_len", type=int, default=512)
     ap.add_argument("--risk_max_len", type=int, default=384)
     ap.add_argument("--max_source_len", type=int, default=896)
@@ -235,6 +285,7 @@ def main():
     print("gate_focus_aspect:", args.gate_focus_aspect)
     print("gate_focus_threshold:", args.gate_focus_threshold)
     print("min_focus_risk_delta:", args.min_focus_risk_delta)
+    print("acceptance_policy:", getattr(args, "acceptance_policy", "legacy"))
     print("load_in_4bit:", use_4bit)
     base = load_base_model(args.base_model, use_4bit)
     model = PeftModel.from_pretrained(base, args.sft_adapter_dir, adapter_name="sft")
@@ -378,6 +429,16 @@ def main():
                     den_metrics["focus_risk_score"] if accepted and den_metrics else sft_metrics["focus_risk_score"]
                 ),
                 "specificity_ratio": den_metrics["specificity_ratio"] if den_metrics else 1.0,
+                "word_count_ratio": den_metrics["specificity_ratio"] if den_metrics else 1.0,
+                "sft_word_count": sft_metrics["word_count"],
+                "denoiser_word_count": den_metrics["word_count"] if den_metrics else None,
+                "acceptance_policy": getattr(args, "acceptance_policy", "legacy"),
+                "acceptance_settings": acceptance_policy_settings(args),
+                "surface_heuristic_flags": (
+                    (["specificity_ratio_low"] if den_metrics["specificity_ratio"] < args.specificity_min_ratio else [])
+                    + (["genericity_increased"] if den_metrics["generic_count"] > sft_metrics["generic_count"] else [])
+                    if den_metrics else []
+                ),
                 "sft_bad_safety_count": sft_metrics["bad_safety_count"],
                 "denoiser_bad_safety_count": den_metrics["bad_safety_count"] if den_metrics else None,
                 "sft_generic_count": sft_metrics["generic_count"],
@@ -427,6 +488,8 @@ def main():
         "input": {"path": str(Path(args.input).resolve()), "sha256": file_sha256(args.input), "rows": len(rows)},
         "output": {"path": str(Path(args.output).resolve()), "sha256": file_sha256(args.output), "rows": len(outs)},
         "settings": vars(args),
+        "acceptance_policy": getattr(args, "acceptance_policy", "legacy"),
+        "acceptance_settings": acceptance_policy_settings(args),
         "denoiser_called": len(used),
         "denoiser_accepted": len(accepted),
         "generation_completion": {
@@ -460,3 +523,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
