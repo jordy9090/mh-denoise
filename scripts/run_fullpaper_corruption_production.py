@@ -138,7 +138,8 @@ def initialize_run_contract(output: Path, contract: dict[str, Any]) -> str:
         else:
             stale = [
                 path.name for path in output.iterdir()
-                if path.name.startswith("results_checkpoint.") or path.name in {"accepted.jsonl", "train_sft.jsonl", "valid_sft.jsonl"}
+                if path.name.startswith("results_checkpoint.")
+                or path.name in {"accepted.jsonl", "train_sft.jsonl", "valid_sft.jsonl", "test_sft.jsonl"}
             ]
             if stale:
                 raise RuntimeError(f"Checkpoint artifacts exist without a run contract; refusing reuse: {stale}")
@@ -309,12 +310,18 @@ def load_selection(
         )
     if not selected:
         raise ValueError("Processing cap selected zero inputs")
+    selected_splits = sorted({item["split"] for item in selected})
     for field in ("question_normalized_sha256", "duplicate_cluster_id", "source_group_id"):
-        train_groups = {item["clean"].get(field) for item in selected if item["split"] == "train"}
-        valid_groups = {item["clean"].get(field) for item in selected if item["split"] == "valid"}
-        overlap = (train_groups - {None}) & (valid_groups - {None})
-        if overlap:
-            raise ValueError(f"TRAIN/VALID {field} overlap in production selection: {sorted(overlap)[:5]}")
+        for left_index, left_split in enumerate(selected_splits):
+            left = {item["clean"].get(field) for item in selected if item["split"] == left_split} - {None}
+            for right_split in selected_splits[left_index + 1 :]:
+                right = {item["clean"].get(field) for item in selected if item["split"] == right_split} - {None}
+                overlap = left & right
+                if overlap:
+                    raise ValueError(
+                        f"{left_split.upper()}/{right_split.upper()} {field} overlap in production "
+                        f"selection: {sorted(overlap)[:5]}"
+                    )
     return selected
 
 
@@ -330,8 +337,9 @@ def export(output: Path, results: list[dict[str, Any]], manifest: dict[str, Any]
     conflicts = [row for row in results if row["status"] == "qc_conflict"]
     holds = [row for row in results if row["status"] == "qc_hold"]
     rejected = [row for row in results if row["status"] not in ("accepted", "qc_conflict", "qc_hold")]
-    sft_by_split: dict[str, list[dict[str, Any]]] = {"train": [], "valid": []}
-    dpo_by_split: dict[str, list[dict[str, Any]]] = {"train": [], "valid": []}
+    canonical_splits = ("train", "valid", "test")
+    sft_by_split: dict[str, list[dict[str, Any]]] = {split: [] for split in canonical_splits}
+    dpo_by_split: dict[str, list[dict[str, Any]]] = {split: [] for split in canonical_splits}
     all_spans: list[dict[str, Any]] = []
     excluded_spans: list[dict[str, Any]] = []
     response_level_evidence: list[dict[str, Any]] = []
@@ -436,11 +444,14 @@ def export(output: Path, results: list[dict[str, Any]], manifest: dict[str, Any]
     checks = {
         "terminal_partition": len(accepted) + len(rejected) + len(conflicts) + len(holds) == len(results),
         "accepted_intended_subset_realized": all(set(row["intended_axes"]) <= set(row["realized_axes"]) for row in accepted),
-        "accepted_clean_canonical_split_only": all(row["split"] in {"train", "valid"} and row["baseline_degraded_axes"] == [] for row in accepted),
+        "accepted_clean_canonical_split_only": all(
+            row["split"] in set(canonical_splits) and row["baseline_degraded_axes"] == []
+            for row in accepted
+        ),
         "sft_dpo_count_matches": sum(map(len, sft_by_split.values())) == sum(map(len, dpo_by_split.values())) == len(accepted),
         "pair_contract": all(
             s["target"] == d["chosen"] and s["input"]["corrupted_response"] == d["rejected"]
-            for split in ("train", "valid")
+            for split in canonical_splits
             for s, d in zip(sft_by_split[split], dpo_by_split[split], strict=True)
         ),
         "span_offsets_exact": all(
@@ -486,6 +497,8 @@ def export(output: Path, results: list[dict[str, Any]], manifest: dict[str, Any]
         "train_dpo.jsonl": dpo_by_split["train"],
         "valid_sft.jsonl": sft_by_split["valid"],
         "valid_dpo.jsonl": dpo_by_split["valid"],
+        "test_sft.jsonl": sft_by_split["test"],
+        "test_dpo.jsonl": dpo_by_split["test"],
         "source_verified_spans.jsonl": all_spans,
         "excluded_unverified_evidence.jsonl": excluded_spans,
         "response_level_qc_evidence.jsonl": response_level_evidence,
@@ -1086,7 +1099,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selection-file", required=True)
     parser.add_argument("--max-inputs", type=int, required=True)
-    parser.add_argument("--splits", default="train", help="Comma-separated canonical splits: train, valid, or train,valid")
+    parser.add_argument(
+        "--splits",
+        default="train",
+        help="Comma-separated canonical splits drawn from train, valid, and test",
+    )
     parser.add_argument("--known-holds-file", default=str(DEFAULT_HOLDS))
     parser.add_argument(
         "--additional-known-hold-ids-file", action="append", default=[],
@@ -1112,6 +1129,22 @@ def main() -> None:
     parser.add_argument("--local-judge-timeout-seconds", type=float, default=300.0)
     parser.add_argument("--carry-forward-checkpoint")
     parser.add_argument(
+        "--pause-after-accepted",
+        type=int,
+        default=0,
+        help=(
+            "For a single worker, stop at the first atomic checkpoint boundary where this "
+            "many accepted rows exist. Zero disables the scheduling-only pause."
+        ),
+    )
+    parser.add_argument(
+        "--pause-state-file",
+        help=(
+            "Optional JSON audit record for --pause-after-accepted; defaults to "
+            "<output-dir>/pause_after_accepted.json."
+        ),
+    )
+    parser.add_argument(
         "--clean-context-review-file",
         help=(
             "Optional JSONL of hash-bound complete-question/clean reviews. "
@@ -1130,9 +1163,13 @@ def main() -> None:
         )
     if args.max_inputs < 1 or not 1 <= args.worker_count <= 3 or not 0 <= args.worker_index < args.worker_count:
         raise ValueError("Invalid processing or worker cap")
+    if args.pause_after_accepted < 0:
+        raise ValueError("--pause-after-accepted must be non-negative")
+    if args.pause_after_accepted and args.worker_count != 1:
+        raise ValueError("--pause-after-accepted currently requires --worker-count 1")
     allowed_splits = {item.strip() for item in args.splits.split(",") if item.strip()}
-    if not allowed_splits or not allowed_splits <= {"train", "valid"}:
-        raise ValueError("--splits must contain only train and/or valid")
+    if not allowed_splits or not allowed_splits <= {"train", "valid", "test"}:
+        raise ValueError("--splits must contain only train, valid, and/or test")
     generator_model_dir = Path(
         args.generator_model_dir or GENERATORS["qwen"]["snapshot"]
     ).resolve()
@@ -1338,15 +1375,69 @@ def main() -> None:
                 raise RuntimeError("Completed manifest fingerprint differs from the current run")
             return
 
-    gpu = gpu_status(args.selected_gpu, args.required_free_vram_mib)
-    if not gpu["sufficient_free_vram"]:
-        raise RuntimeError("Insufficient free VRAM")
     width = (len(remaining_selected) + args.worker_count - 1) // args.worker_count
     worker_items = remaining_selected[args.worker_index * width : min((args.worker_index + 1) * width, len(remaining_selected))]
     checkpoint = output / f"results_checkpoint.part{args.worker_index}.jsonl"
     done = {row["canonical_id"]: row for row in read_jsonl(checkpoint)} if checkpoint.exists() else {}
     if any(row.get("run_fingerprint") != run_fingerprint for row in done.values()):
         raise RuntimeError("Checkpoint fingerprint differs from the current run contract; refusing reuse")
+
+    def pause_at_atomic_boundary_if_requested() -> bool:
+        if not args.pause_after_accepted:
+            return False
+        terminal_by_id = {row["canonical_id"]: row for row in carry_rows}
+        terminal_by_id.update(done)
+        accepted_ids = [
+            canonical_id for canonical_id in selected_ids
+            if terminal_by_id.get(canonical_id, {}).get("status") == "accepted"
+        ]
+        if len(accepted_ids) < args.pause_after_accepted:
+            return False
+        next_unprocessed_id = next(
+            (item["clean"]["canonical_id"] for item in worker_items
+             if item["clean"]["canonical_id"] not in done),
+            None,
+        )
+        pause_path = (
+            Path(args.pause_state_file).resolve()
+            if args.pause_state_file
+            else output / "pause_after_accepted.json"
+        )
+        pause_state = {
+            "status": "paused_after_atomic_checkpoint",
+            "run_fingerprint": run_fingerprint,
+            "worker_index": args.worker_index,
+            "pause_after_accepted": args.pause_after_accepted,
+            "accepted_terminal_rows": len(accepted_ids),
+            "first_accepted_ids_in_frozen_selection_order": accepted_ids[:args.pause_after_accepted],
+            "terminal_rows_with_carry": len(terminal_by_id),
+            "worker_checkpoint_rows": len(done),
+            "worker_checkpoint": str(checkpoint),
+            "worker_checkpoint_sha256": sha256_file(checkpoint) if checkpoint.exists() else None,
+            "checkpoint_atomic_write_complete": True,
+            "safe_row_boundary": True,
+            "next_unprocessed_id": next_unprocessed_id,
+            "resume_policy": (
+                "restart the identical run without --pause-after-accepted; terminal checkpoint "
+                "rows are reused and no completed canonical_id is called again"
+            ),
+        }
+        atomic_write_json(pause_path, pause_state)
+        atomic_write_json(
+            output / f"worker_status.part{args.worker_index}.json",
+            {**manifest, **pause_state, "status": "paused_after_accepted"},
+        )
+        print(json.dumps(pause_state, ensure_ascii=False), flush=True)
+        return True
+
+    # A resumed scheduling process must not reload either model when the pause
+    # threshold was already reached by an earlier atomic checkpoint.
+    if pause_at_atomic_boundary_if_requested():
+        return
+
+    gpu = gpu_status(args.selected_gpu, args.required_free_vram_mib)
+    if not gpu["sufficient_free_vram"]:
+        raise RuntimeError("Insufficient free VRAM")
     if local_judge:
         judge = LocalProductionJudge(
             Path(args.local_judge_model_dir), args.local_judge_max_new_tokens,
@@ -1438,6 +1529,8 @@ def main() -> None:
                 "remaining_axis_count_composition": dict(remaining_axes),
                 "eta_seconds_from_observed_rows": eta_seconds,
             }, ensure_ascii=False), flush=True)
+            if pause_at_atomic_boundary_if_requested():
+                return
     finally:
         backend.close()
         if local_judge:
