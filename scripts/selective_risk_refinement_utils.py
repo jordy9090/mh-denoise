@@ -131,6 +131,26 @@ def clean_text(text: str) -> str:
 def cleanup_response(text: str) -> str:
     text = str(text or "")
     text = text.split("<eos>")[0]
+    # A model may put a short rewrite preface before a standalone response
+    # label. In that form, the answer begins after the label, not before the
+    # embedded "Response:" substring.
+    standalone_label = re.search(
+        r"(?im)^[ \t]*\*{0,2}[ \t]*(?:(?:safe|final)[ \t]+)?response[ \t]*:[ \t]*\*{0,2}[ \t]*$",
+        text,
+    )
+    if standalone_label:
+        text = text[standalone_label.end() :]
+    # Models sometimes wrap a leading response label in Markdown and vary its
+    # capitalization (for example, "**Final Response:**"). Strip that whole
+    # prefix before the legacy section-label handling below sees "Response:"
+    # in isolation and mistakes the label fragment for the answer.
+    text = re.sub(
+        r"^\s*\*{0,2}\s*(?:(?:safe|final)\s+)?response\s*:\s*\*{0,2}\s*",
+        "",
+        text,
+        count=1,
+        flags=re.I,
+    )
     for label in [
         "Safe response:",
         "Final response:",
@@ -153,6 +173,8 @@ def cleanup_response(text: str) -> str:
     text = re.sub(r"\s+([.,!?;:])", r"\1", text)
     text = re.sub(r"([,.;:])\1+", r"\1", text)
     text = re.sub(r"\b(\w+)( \1\b){2,}", r"\1", text, flags=re.I)
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        text = text[1:-1].strip()
     return text.strip()
 
 
