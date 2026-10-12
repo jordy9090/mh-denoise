@@ -495,7 +495,7 @@ def main():
     save_adapter(model, tokenizer, out / "final", args, {"valid_loss": final_loss, "step": step})
     manifest = {
         "status": "complete_training",
-        "initialization": "continued from the saved SFT adapter",
+        "initialization": "continued from saved adapter: " + args.init_adapter_dir,
         "base_model": str(Path(args.base_model).resolve()),
         "init_adapter_dir": str(Path(args.init_adapter_dir).resolve()),
         "risk_contract": args.risk_contract,
