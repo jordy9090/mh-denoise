@@ -81,9 +81,17 @@ def main():
     if args.max_examples is not None:
         rows = rows[: args.max_examples]
 
-    outs = []
+    outs = read_jsonl(args.output) if Path(args.output).exists() else []
+    completed = {r['canonical_id']: r for r in outs}
+    assert len(completed) == len(outs)
+    expected = {canonical_example(r)['canonical_id']: canonical_example(r) for r in rows}
+    assert set(completed) <= set(expected)
+    for cid, old in completed.items():
+        assert all(old[k] == expected[cid][k] for k in ('question', 'unsafe_response'))
     for ex in tqdm(rows):
         row = canonical_example(ex)
+        if row['canonical_id'] in completed:
+            continue
         prompt = build_sft_prompt(tokenizer, row)
         raw, cleaned, generation = generate_response(
             model,
@@ -102,6 +110,9 @@ def main():
         out["sft_prompt_style"] = args.sft_prompt_style
         out["method"] = "sft_refiner_output_for_risk_tuning"
         outs.append(out)
+        temporary = str(args.output) + '.checkpoint.tmp'
+        write_jsonl(outs, temporary)
+        Path(temporary).replace(args.output)
 
     write_jsonl(outs, args.output)
     def file_sha256(path):

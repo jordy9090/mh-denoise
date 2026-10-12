@@ -296,9 +296,18 @@ def main():
     if args.max_examples is not None:
         rows = rows[: args.max_examples]
 
-    outs = []
+    outs = read_jsonl(args.output) if Path(args.output).exists() else []
+    completed = {r['canonical_id']: r for r in outs}
+    assert len(completed) == len(outs)
+    expected = {canonical_example(r)['canonical_id']: canonical_example(r) for r in rows}
+    assert set(completed) <= set(expected)
+    for cid, old in completed.items():
+        assert old['question'] == expected[cid]['question']
+        assert old['sft_response'] == clean_text(expected[cid][args.sft_response_field])
     for raw in tqdm(rows):
         row = canonical_example(raw)
+        if row['canonical_id'] in completed:
+            continue
         q = row["question"]
 
         sft_raw = ""
@@ -461,6 +470,9 @@ def main():
             }
         )
         outs.append(out)
+        temporary = str(args.output) + '.checkpoint.tmp'
+        write_jsonl(outs, temporary)
+        Path(temporary).replace(args.output)
 
     write_jsonl(outs, args.output)
     used = [r for r in outs if r["used_denoiser"]]
