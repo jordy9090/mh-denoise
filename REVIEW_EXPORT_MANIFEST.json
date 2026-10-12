@@ -15,8 +15,8 @@
     },
     {
       "path": "docs/ACL_REPRODUCIBILITY.md",
-      "source_sha256": "f1765a3177c8e0af583bd6a594e37bbfd681a2cf480d54e18b92c7bb166f3814",
-      "export_sha256": "f1765a3177c8e0af583bd6a594e37bbfd681a2cf480d54e18b92c7bb166f3814",
+      "source_sha256": "38c77ca46e689401d34599d78e88488d7e58538fc16534949440f7b945640403",
+      "export_sha256": "38c77ca46e689401d34599d78e88488d7e58538fc16534949440f7b945640403",
       "filesystem_substitutions": 0,
       "private_provenance_substitutions": 0
     },
@@ -358,8 +358,8 @@
     },
     {
       "path": "scripts/train_gemma_risk_tune_from_sft.py",
-      "source_sha256": "a034a383226a09ee62dd9bcebf82b4f22e859208a7be56d9967f7442cb37be1b",
-      "export_sha256": "a034a383226a09ee62dd9bcebf82b4f22e859208a7be56d9967f7442cb37be1b",
+      "source_sha256": "8ecd5e3d7eb3129b218c900fb1ddd45fe09130f092cf5994ba7877148ae1555b",
+      "export_sha256": "8ecd5e3d7eb3129b218c900fb1ddd45fe09130f092cf5994ba7877148ae1555b",
       "filesystem_substitutions": 0,
       "private_provenance_substitutions": 0
     },
