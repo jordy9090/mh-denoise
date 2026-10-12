@@ -96,7 +96,7 @@ STOPWORDS = {
     "with",
     "would",
     "your",
-    "youre",
+    "you're",
 }
 
 

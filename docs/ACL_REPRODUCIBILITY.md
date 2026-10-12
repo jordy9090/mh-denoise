@@ -279,10 +279,11 @@ The implementation's oversampling comparison is `>= threshold`, while the
 manuscript writes `> threshold`. This boundary difference is documented, not
 silently fixed. No equivalence claim is made for hypothetical scores exactly
 equal to the threshold.
-There is also a literal lexical-inventory difference: the latest Appendix
-prints `you're`, whereas the frozen stopword set in
-`scripts/selective_risk_refinement_utils.py` contains `youre` and the tokenizer
-retains apostrophes. Neither the manuscript nor frozen rule was changed here.
+The current stopword set in `scripts/selective_risk_refinement_utils.py` uses
+`you're`, matching the latest Appendix. This source correction replaces the
+historical frozen literal `youre`; the tokenizer retains internal apostrophes,
+so keyword coverage can differ for newly processed text. Frozen evaluation
+outputs were not regenerated, and the manuscript was not changed.
 
 ## Original Prompts
 
@@ -497,14 +498,16 @@ were recomputed and no unlocated instructions were invented for this release.
 ## Source Inventory
 
 These are content fingerprints, not a claim that every included file's current
-bytes were captured at historical execution time. The table records unchanged
-integrated-source hashes. DPO entry points already present in the repository
+bytes were captured at historical execution time. The table records current
+included-source hashes. DPO entry points already present in the repository
 are linked above; bounded evaluation adapters are described below.
 All code paths are repository-relative.
 
 Three included files differ from the earlier inspected source. The response
 utility now strips standalone/Markdown response labels and enclosing quotes;
 its prompt templates are unchanged, but extracted response bytes can differ.
+Its stopword literal was also corrected from historical `youre` to `you're`,
+as described above; saved evaluation outputs remain frozen.
 The refinement runner adds the explicit `surface_relaxed_v1` policy and logging
 alongside the legacy policy. The queue reader uses `splitlines()` rather than
 splitting only on newline. These changes prevent a blanket byte-equivalence
@@ -533,7 +536,7 @@ and the corrected TEST60 selector remain the evaluation dependencies.
 | `scripts/select_arr_valid_risk_thresholds.py` | Included | `3bb7b90eba16a7426bee346cf706e9d290974da1bf353668a523c960bbb24d5d` |
 | `scripts/build_sft_outputs_for_risk_tuning.py` | Included | `ad45155160961898614e2741a3a231895e45d6a635daf9975b44e75802b7fbe5` |
 | `scripts/train_gemma_risk_tune_from_sft.py` | Included | `a034a383226a09ee62dd9bcebf82b4f22e859208a7be56d9967f7442cb37be1b` |
-| `scripts/selective_risk_refinement_utils.py` | Included | `58c129810f51de62e3a6f98ba56105b7836526e821b221e0f39da856fc3ca020` |
+| `scripts/selective_risk_refinement_utils.py` | Included | `450d5b8582680ec7e494a9475fa3f8d0f25c187010492366bcf4823c5de04a99` |
 | `scripts/run_gemma_selective_risk_refinement.py` | Included | `1da35327b4609ecada24ffff08f66d4df8e14f718c083c7696daa43d8c9439c8` |
 | `scripts/build_frozen_revision2_test_partial_export.py` | Included | `087bbcf3ac571243bdb5f73d42937dd6bbeb4fded32945bb27663f0d26d0b0d9` |
 | `scripts/prepare_rubric_aligned_gpt41_rejudge.py` | Included | `d3f9c24436fab1c134e67e735c63d1ca3fe3e3911a44abb7d5941eeefd750185` |
