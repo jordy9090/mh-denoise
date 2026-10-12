@@ -5,16 +5,21 @@ Mental-Health Question Answering**, using the production artifacts inspected on
 2026-10-12. It records evidence and remaining dependencies; it is not a claim
 that a fresh public clone can reproduce every manuscript result.
 
-The manuscript source inspected was `acl_latex.tex`, SHA256
-`94334304dcc95f655ff46a6df7c2d8555a7cd39f27dec59a96319cc47b7b5db7`.
+The latest reviewed manuscript source was `acl_latex.tex`, SHA256
+`204dc44ad24cf3ad4c3d8064c99434c0654b063feeb833d9c526106e960f26e3`.
+Only that member changed between the two inspected manuscript archives;
+their other 15 members and all reported table numbers are unchanged. The latest
+revision clarifies the invocation/quality tradeoff and ordinary-input transfer,
+reorders discussion, simplifies input notation, and changes table emphasis.
+The manuscript itself was not edited or included in the reviewer export.
 The integrated implementation now contains the construction/QC, data export,
 risk models, SFT/refinement, and corrected TEST60 GPT selection/evaluation
 entry points. Their presence, original prompt definitions and production
 settings were checked statically against the saved execution evidence.
-The source inventory below distinguishes included implementation from four
-historical Llama/expert evaluation sources that are not included. Source
-presence does not establish availability of frozen data, weights or a complete
-evaluation reproduction.
+The source inventory distinguishes unchanged integrated implementation from
+bounded adapters of the separately executed Llama and ordinary-draft routines.
+Source presence does not establish availability of frozen data, weights or a
+complete evaluation reproduction.
 
 No training, generation, model loading, paid API calls, or TEST changes were
 performed for this documentation review. Local artifacts were read for schemas,
@@ -29,9 +34,9 @@ hashes, counts, and configuration. Counseling text is not reproduced here.
 | Router, Scorer, SFT, complete-response refinement | Completed training manifests, saved configs, exact code paths | Existing run documented; fresh training not rerun |
 | Corruption TEST60 generation and GPT selection | Corrected frozen final file, contracts and completion reports | 60 questions, 18 invocations, six GPT adoptions verified |
 | GPT pointwise evaluation | Corrected TEST60 publication contract/report | Completed artifact documented; API calls not repeated |
-| Independent Llama matrix | Completed component-matrix evaluation and publication tables | Main TEST60 table source identified; separate Appendix count mismatch remains |
-| Ordinary drafts | Private generation/evaluation scripts and completed outputs | Generation and Llama assessment identified; paper's GPT final selection not verified |
-| Expert evaluation | Blinded packet-building code and unfilled packet exports | Completed six-question ratings and agreement analysis not located |
+| Auxiliary Llama matrix | Raw results/cache, assignments, manifests, logs and publication tables | SFT/accept-all/selected 58/60 rows and paired transitions verified; bounded code adapters included |
+| Ordinary drafts | Original generation/Llama records plus later frozen two-order GPT replay | 60 drafts, 25 candidates, 50 selector requests and eight adoptions linked to existing Llama judgments |
+| Expert evaluation | Two completed six-question forms, extraction code and verified ratings table | Reported means verified locally; forms and internal extraction audit excluded from public export; agreement/procedural limits below |
 
 The later TEST100 extension is a separate experiment. Its 100 questions,
 28 invocations, and nine adoptions must not replace the manuscript's TEST60
@@ -152,6 +157,12 @@ merely to check this document.
    enrich and train refinement with
    `scripts/train_gemma_risk_tune_from_sft.py`. Its `mask_off` variant is the
    manuscript's complete-response refinement. Other variants are ablations.
+   DPO is a separate SFT-initialized comparator: render the same frozen
+   question/draft preference pairs with
+   [render_fullpaper_dpo_for_backbone.py](../scripts/render_fullpaper_dpo_for_backbone.py),
+   then train with [train_dpo_minimal.py](../scripts/train_dpo_minimal.py)
+   using `--data_contract fullpaper`. Its legacy filename/docstring does not
+   make this run the exp295 experiment.
 6. Export frozen test inputs with
    `scripts/build_frozen_revision2_test_partial_export.py`; generate SFT and
    invoked candidates using the saved final adapters and
@@ -188,8 +199,10 @@ This is a private dependency identifier, not an artifact-availability promise.
 | Earlier construction QC | `gpt-4.1-2025-04-14` | Retain each historical request's own prompt/model metadata; not interchangeable with later local QC |
 | SFT/refinement base | `google/gemma-4-E4B-it`, `ee0ef6023621cff504d758262d4e04895a5af4a2` | Saved local snapshot; text-only LoRA |
 | Router and Scorer bases | `google-bert/bert-base-uncased`, `86b5e0934494bd15c9632b12f734a8a67f723594` | Separate pretrained encoders and newly initialized six-output heads |
-| Candidate selector | `gpt-4.1-2025-04-14` | Temperature 0; JSON object; 256 output tokens per order |
+| Candidate selector, including ordinary replay | `gpt-4.1-2025-04-14` | Temperature 0; JSON object; 256 output tokens per order |
 | GPT pointwise evaluator | `gpt-4.1-2025-04-14` | Temperature 0; JSON object; 384 output tokens |
+| Auxiliary Llama evaluator | `meta-llama/Llama-3.1-8B-Instruct`, `0e9e39f249a16976918f6564b8830bc894c89659` | Greedy; input 16384; output 384 for the matrix, 768 for the separate ordinary queue |
+| Ordinary-draft generator | `mistralai/Mistral-7B-Instruct-v0.3`, `c170c708c41dac9275d15a8fff4eca08d52bab71` | Question only; helpful-assistant system message; greedy; input 16384; output 768 |
 
 The production QC retry policy requires a one-point adverse score change for
 quality/empathy/specificity/factual consistency, a one-point toxicity increase,
@@ -227,6 +240,15 @@ The Router/Scorer each use learning rate 1e-5, batch 8, seed 20260910 and
 During inference, Router input limit is 512 and sentence-Scorer input limit is
 384. The six-output BCE is averaged over observed cells only.
 
+DPO uses the saved SFT adapter, beta 0.1, learning rate 1e-6, batch 1 and
+gradient accumulation 16. The launcher computes three-epoch-equivalent steps
+from the frozen training count and obtains complete prompt/completion limits
+from the length audit rather than truncating preferences to a legacy default.
+The saved DPO manifest records 54 steps, prompt limit 1024, completion limit
+704 and seed 20260910.
+The rendered files are `gemma/dpo_train_rendered.jsonl` and
+`gemma/dpo_valid_rendered.jsonl`; checkpoint output is `gemma/dpo/final`.
+
 `valid_risk_thresholds.json` records threshold selection on 43 VALID pairs,
 using candidate/reference labels and balanced accuracy, then F1, distance from
 0.35, and lower threshold as tie breakers. The full-model threshold is
@@ -249,11 +271,18 @@ The serialized historical heading still says `Risk-aware corrupted SFT
 response`, but `no_mask` leaves that field complete. Risk scores condition the
 input and oversampling; this production configuration does not mask passages
 or apply nonuniform target-token risk weighting.
+The latest manuscript's shortened `Serialize(q,u,SFT,g)` notation does not
+change this serialization: its figure, training text and Appendix still
+describe both complete SFT fields.
 
 The implementation's oversampling comparison is `>= threshold`, while the
 manuscript writes `> threshold`. This boundary difference is documented, not
 silently fixed. No equivalence claim is made for hypothetical scores exactly
 equal to the threshold.
+There is also a literal lexical-inventory difference: the latest Appendix
+prints `you're`, whereas the frozen stopword set in
+`scripts/selective_risk_refinement_utils.py` contains `youre` and the tokenizer
+retains apostrophes. Neither the manuscript nor frozen rule was changed here.
 
 ## Original Prompts
 
@@ -274,6 +303,8 @@ from a launcher's legacy filename.
 | Complete-response refinement | Same utility: `build_risk_tune_user_content()`, `format_g()`, `build_risk_tune_prompt()` |
 | GPT selector | `scripts/prepare_rubric_aligned_gpt41_rejudge.py`: `SELECTOR_SYSTEM_PROMPT`, `SELECTOR_USER_TEMPLATE` |
 | GPT/Llama pointwise rubric | Same preparation script: `POINTWISE_SYSTEM_PROMPT`, `POINTWISE_USER_TEMPLATE`; exact frozen request messages are authoritative |
+| Ordinary drafts | `scripts/run_natural.py`: system message `You are a helpful assistant.` and the question alone; no reference or deliberate corruption in the generator input |
+| Ordinary GPT selection | `scripts/run_ordinary_gpt_selector.py` reads the original frozen selector contract and checks both prompt hashes; no new prompt file or rewritten rubric |
 
 Later production run contracts record the following SHA256 fingerprints:
 
@@ -326,84 +357,150 @@ orders select the candidate. Ties, disagreement, invalid or missing judgments,
 missing candidates, and gate-off cases retain SFT. No additional scalar-risk
 or medical-category veto is imposed by that GPT selector.
 
-## Evaluation And Unresolved Provenance
+## Evaluation Provenance And Execution Order
 
-The corrected GPT TEST60 evaluation uses
-`test60_corrected_gpt41_pointwise_publication_20261009_v1/run_contract.json`
-and `scripts/run_corrected_test60_pointwise_publication.py`. It evaluates
-anonymous question-response pairs pointwise; exact duplicates reuse one
-judgment. The three numeric qualities are averaged without medical labels.
-Medical yes rates use the non-unsure denominator. Counts of medical
-corrections and introductions require paired per-question labels, not only
-aggregate yes rates. The selector and this evaluator share GPT-4.1, so this
-evaluation is not independent of the selection model.
+### Auxiliary Llama TEST60
 
-The paper's Llama main table is traceable to retained publication tables
-`main_baselines_llama.tex` and `component_ablations_llama.tex`, implemented by
-`scripts/run_acl_component_pointwise.py` and
-`scripts/run_acl_component_llama_pointwise.py`. This matrix records 436
-expected distinct assessment assignments, including 384 new results and
-52 reused cache entries. Its main SFT/selected rows have 58 valid judgments
-and quality means 3.149/3.328, matching the inspected manuscript table.
-The local model is `meta-llama/Llama-3.1-8B-Instruct`, revision
-`0e9e39f249a16976918f6564b8830bc894c89659`; the matrix runner records
-16384 input tokens and 384 output tokens per assessment. Its helper import
-`run_valid_feedback_v1.py` comes from a sibling feedback worktree, not a
-self-contained public module path.
+The exact table source is the saved `acl_component_ablation_matrix_20261009_v1`
+artifact root, not a new evaluation. Its identity chain is:
 
-However, the manuscript Appendix's 233 distinct assessments and 11 missing
-medical-specific rationales describe a separate retained independent run. Its
-`run_independent.py` source is not included in this checkout. That run
-contains 60 SFT judgments with mean quality 3.2556, not the matrix's 58/3.149.
-Excluding the 11 missing medical rationales also does not reconcile the runs:
-the retained run's strict SFT subset has 55 judgments and mean quality 3.2424.
-The table and Appendix provenance need reconciliation before claiming exact
-reproduction of the independent evaluation. Missing-rationale inclusion and
-evidence-conformance policies must be reported for the particular result set;
-they cannot be transferred from one run to another.
+```text
+inputs/test60_sft_frozen.jsonl + inputs/test60_main_proposed_frozen.jsonl
+results/final_method_outputs.jsonl
+  -> inputs/all_pointwise_assignments.jsonl
+  -> requests/expected_pointwise_requests.jsonl
+  -> requests/new_llama_pointwise_requests.jsonl
+  -> results/new_llama_pointwise_results.jsonl
+     + results/reused_llama_pointwise_cache.jsonl
+  -> results/llama_assignment_scores.jsonl
+  -> tables/llama_final_quality_summary.csv
+     + tables/llama_final_all_pairs.jsonl
+```
 
-The ordinary-draft generation/evaluation sources are `run_natural.py`,
-`evaluate_natural.py`, and `run_independent.py`; these are not included in this
-checkout. The recorded Mistral snapshot is
-`mistralai/Mistral-7B-Instruct-v0.3` revision
-`c170c708c41dac9275d15a8fff4eca08d52bab71`; the question-only input uses system
-message `You are a helpful assistant.`, greedy decoding, 16384 source tokens
-and 768 output tokens. Existing outputs cover 60 ordinary drafts, 60 SFT
-responses and 25 invoked candidates; Llama assessments cover 145 distinct
-question-response pairs. The private scripts are not a verified public
-repository entry point.
+[run_acl_component_llama_pointwise.py](../scripts/run_acl_component_llama_pointwise.py)
+prepares/runs the local queue; the retained scoring and aggregation routines in
+[run_acl_component_pointwise.py](../scripts/run_acl_component_pointwise.py)
+join exact question/response identities and exclude schema-invalid judgments.
+The original publication/ZIP packaging and unrelated risk-scoring operations
+are not part of that bounded public adapter. Existing model loading, chat
+rendering, EOS handling and JSON parsing functions are shared through
+[acl_local_judge_utils.py](../scripts/acl_local_judge_utils.py), extracted from
+the helper actually used by the historical run, not a new judge implementation.
 
-The located `natural_final` artifact uses the lexical/risk rule and records
-seven adoptions. Its final quality is 3.2278 with 22 medical yes labels, whereas
-the manuscript's GPT-selected row reports eight adoptions, quality 3.506 and
-20 medical yes labels. The ordinary SFT baseline (quality 3.3111, 21 medical
-yes) is traceable to existing judgments. No frozen ordinary-draft two-order
-GPT decisions and final-response identity map establishing the GPT-selected
-row were located. Those selection and final-response claims remain unverified;
-ordinary candidate generation alone does not establish them.
+The saved contract is `llama_pointwise_contract.json`; completion is recorded in
+`results/new_llama_pointwise_results.manifest.json` and `logs/postprocess.log`.
+There are 436 unique question-response requests: 384 new request identities
+plus 52 exact cached judgments. Repeated JSONL attempts are resolved by the
+original request-ID logic, not counted as independent judgments. The completed
+new queue has 360 schema-valid and 24 invalid judgments. Final batch size was
+16; the runner's generic default is not the recorded invocation setting.
 
-`scripts/build_rubric_aligned_expert_packet.py` and its packet manifest document
-blinded forms, instructions and system mapping. Located TEST15x3 and TEST60x3
-packets are not completed ratings for the six adopted questions. The located
-TEST15x3 form has 45 rows with no populated rating or rationale fields. The
-completed two-rater, six-question SFT/DPO/selected ratings, missing-value treatment,
-agreement-analysis code and recruitment/compensation records were not located.
-The archive also claims Korean instructions and an English translation in the
-supplement; neither was found in its 16-file inventory. Their actual
-production six-question version and availability remain unverified. An existing
-English guide for a 15-question packet and Korean column labels do not establish
-the complete Korean/English instructions used for the reported six-question study.
-The expert means, agreement statistics and procedural claims therefore remain
-unverified by this workspace review. Do not treat packet generation as proof
-that expert assessment was completed or publicly released.
+| Final condition | Stored method | Valid / expected | U | Medical yes |
+| --- | --- | ---: | ---: | ---: |
+| SFT | `SFT` | 58 / 60 | 3.149 | 19 |
+| Accept all invoked | `GatedNoSelector` | 58 / 60 | 3.155 | 19 |
+| Selective | `Proposed` | 58 / 60 | 3.328 | 18 |
+
+The selective/SFT common set has 58 judgments, with two yes-to-no and one
+no-to-yes transition. Accept-all/SFT has 57 common judgments, with three of
+each transition. These records match the manuscript. The separate historical
+233-pair collection and its 11 missing no-label medical rationales have their
+own saved `independent_*` queue and extraction convention; they are not the
+matrix table inputs. The latest Appendix distinguishes collection sizes and
+condition-specific valid denominators. Do not replace one run with another or
+carry its missingness policy into a different table.
+
+### Ordinary Drafts And Frozen GPT Replay
+
+The original ordinary generation/evaluation root is
+`manuscript_revision_fixed_policy_20261009/`. In dependency order:
+
+1. [run_natural.py](../scripts/run_natural.py) reads the held-out question
+   identities from `canonical_input.jsonl` and writes `natural_drafts.jsonl`.
+   Its Mistral prompt contains only the helpful-assistant system message and
+   question. It reuses the existing SFT/refinement entry points to write
+   `natural_sft.jsonl` and `natural_final.jsonl`, with their manifests and
+   `natural_sft.log` / `natural_refinement.log`. There are 60 drafts and
+   SFT responses, 25 invoked candidates, and seven rule-based adoptions.
+2. [evaluate_natural.py](../scripts/evaluate_natural.py) reuses the local
+   [run_independent.py](../scripts/run_independent.py) queue routines. It writes
+   `natural_judge_requests.jsonl`, `natural_judge_assignments.jsonl`,
+   `natural_judgments.jsonl`, `natural_judgments.manifest.json` and
+   `natural_evaluation_summary.json`; `natural_evaluation.log` records the run.
+   There are 145 distinct pairs: 60 drafts, 60 SFT responses and 25 candidates.
+   All have integer quality scores and medical categories. Seventeen no-label
+   judgments omit a medical-specific rationale; the historical ordinary table
+   retains their returned scores/categories without imputation.
+   Its rubric is the corrected pointwise publication contract,
+   `test60_corrected_gpt41_pointwise_publication_20261009_v1/run_contract.json`,
+   with `prompts.system_prompt` and `prompts.user_template`, not the selector
+   replay contract.
+3. The separate subsequent `ordinary_gpt_selector_20261011_v1/` artifact
+   applies the frozen GPT selector to those same 25 candidates. Its
+   `run_contract.json` records 11 source-file hashes and the request hash.
+   Every original source and preserved `source_snapshot/` copy matches those
+   hashes. Both prompt strings and every rendered request match the original
+   frozen contract. `requests.jsonl` / `results.jsonl` contain 50 successful
+   comparisons, two orders per candidate. `results.manifest.json` is complete.
+4. `selector_decisions.jsonl` records eight candidates winning both orders,
+   15 SFT wins and two disagreements. `final60.jsonl` and `final60_audit.csv`
+   map exact final text hashes to existing Llama evaluation IDs. The final
+   scores are inherited from `natural_judgments.jsonl`, not new pointwise calls.
+   `aggregate.json`, `validation.json` and the saved `ordinary_aggregation.log`
+   record the checks and summaries. A separate selector stdout log was not
+   located; the raw API results and completed manifest are present.
+
+The preserved [run_ordinary_gpt_selector.py](../scripts/run_ordinary_gpt_selector.py)
+is a verification/aggregation adapter of that actual subsequent script. It
+does not prepare requests or call the API. It requires the original private
+snapshot/contract and evidence audit; it writes only to a new output directory,
+never back into the frozen run. Original prompt definitions remain in the
+existing preparation module, rather than a duplicate prompt file.
+
+| Ordinary condition | Adoptions | U | Medical yes |
+| --- | ---: | ---: | ---: |
+| SFT | 0 | 3.311 | 21 |
+| `LegacyStrict` risk/lexical comparator | 7 | 3.228 | 22 |
+| GPT-Select | 8 | 3.506 | 20 |
+
+The GPT-selected/SFT change is +0.194 with stored paired interval [0.000, 0.428],
+two medical corrections and one introduction. The lower endpoint is numerical
+zero, not a strictly positive lower bound. The ordinary interval uses 20,000
+samples and seed 20261011; the matrix uses 10,000 and seed 20261009. Bootstrap
+was not rerun during this review. Score-complete and strict-schema summaries
+are saved separately; the full-schema GPT final marginal has 57/60, and its
+SFT common subset has 56. Do not substitute them for the historical N=60 row.
+The original evidence-mismatch flags are preserved, not repaired.
+
+### Expert Assessment
+
+Two completed six-question/18-response forms were located and their hashes
+match the recorded input manifest. The existing private extraction routine
+maps anonymous packet identities to SFT/DPO/selected responses and writes
+`expert_ratings_verified.csv`, `expert_extraction_audit.json` and
+`revision_audit.json`. The saved U means match the manuscript: rater 1 has
+SFT 2.444 and selected 3.611; rater 2 has SFT 2.111 and selected 4.000.
+These forms concern the six corruption-reconstruction adoptions, not the
+eight ordinary-draft adoptions. Completed forms, response text, filenames with
+rater identities and internal extraction/audit documents are not public assets.
+
+The two original forms contain identical Korean study-instruction blocks:
+anonymous independent A/B/C ratings, 1-5 quality, categorical medical labels,
+and English response quotations for yes/unsure evidence. The instruction-only
+block hash is `a3ce7d0002eb06b164ec16adcac2be3b40ad6ef7d40db3f596d8a7dc7503a99e`.
+The complete English instruction translation, agreement-analysis code/execution
+records and independent recruitment/compensation records remain unverified.
+Their absence from the inspected public sources is an availability limit, not
+a judgment that the reported evaluation is incorrect. No agreement statistics
+were recomputed and no unlocated instructions were invented for this release.
 
 ## Source Inventory
 
 These are content fingerprints, not a claim that every included file's current
-bytes were captured at historical execution time. Of the 31 reviewed paths,
-27 are included and four Llama/expert evaluation paths are not included. The
-table records integrated-source hashes for included paths and historical-source
-hashes for unavailable paths. All paths are repository-relative.
+bytes were captured at historical execution time. The table records unchanged
+integrated-source hashes. DPO entry points already present in the repository
+are linked above; bounded evaluation adapters are described below.
+All code paths are repository-relative.
 
 Three included files differ from the earlier inspected source. The response
 utility now strips standalone/Markdown response labels and enclosing quotes;
@@ -444,32 +541,97 @@ and the corrected TEST60 selector remain the evaluation dependencies.
 | `scripts/run_test40_extraction_fix.py` | Included | `28a1f4b8212fd0c2a70e063cff4b8469964c2d44d6368d754c43653de0f6a3db` |
 | `scripts/run_corrected_test60_pointwise_publication.py` | Included | `f5abfe7a0205fd8dbb25862ecf86cd1802de4de3610380c5f8fe5edc5b413325` |
 | `scripts/run_gpt41_checkpoint_queue.py` | Included | `fb089db0ba1fdddb08dc1981fb10530deb7b1edfdcf7af3f07eb601f62649ead` |
-| `scripts/run_llama_rubric_aligned_rejudge.py` | Not included | `f90ce48e73567b8da00ebf87e54913d577b9aefef97e9e4c6b4cc925c02f17bb` |
-| `scripts/run_acl_component_llama_pointwise.py` | Not included | `22ae33c6ee069e6a8bb7cfa60a5f322608922fd3584e09c98004f588d5869d82` |
-| `scripts/run_acl_component_pointwise.py` | Not included | `318bf071d08432d58eb256e8932d41c5700003756af826da78216c4b4fc76c8b` |
-| `scripts/build_rubric_aligned_expert_packet.py` | Not included | `b0d19af67d8ff7236b68f4d828cdf9172c1ed70f6e3fdccb7ea9f619808009d0` |
+
+These next fingerprints identify the **historical source**, not the portable
+adapters. Resource paths/imports and entry-point/output handling are adapted;
+numerical scoring/selection routines are preserved and compared statically.
+The local export manifest records the actual public file hashes.
+
+| Included adapter | Historical source SHA256 | Scope |
+| --- | --- | --- |
+| `scripts/run_acl_component_llama_pointwise.py` | `22ae33c6ee069e6a8bb7cfa60a5f322608922fd3584e09c98004f588d5869d82` | Matrix local queue and original strict parser |
+| `scripts/run_acl_component_pointwise.py` | `318bf071d08432d58eb256e8932d41c5700003756af826da78216c4b4fc76c8b` | Request/cache joins, scoring, summaries and paired aggregation; excludes packaging and unrelated risk scoring |
+| `scripts/run_ordinary_gpt_selector.py` | `c29f521ef00892376d17782d6efbef0b5c480aa9078aa6c0583decb528c4aad2` | Existing replay verification and aggregation only |
+| `scripts/run_independent.py` | `003507260448bad8a49371c37be04e3581c26c0d28f90a6e46a6db9bbba31c34` | Separate local pointwise queue, including ordinary evaluation |
+| `scripts/run_natural.py` | `8caa2e37536586cc43f103bd24b7a5bfbbda6af7dbf6d0da48d957a5a4630d27` | Original question-only generation and existing reconstruction/refinement drivers |
+| `scripts/evaluate_natural.py` | `8cccf9c5656b8028f5503fb2e03d10031bd249851242d600ceb01187cc5e4996` | Original ordinary assignment and local-evaluation wrapper |
+| `scripts/acl_local_judge_utils.py` | `d912f82ca3d4539155714bfb2873f95d10f3461992d8e4329dde39d735dc6432` | Only required helper functions from the historical development runner; not its full experiment |
+
+Historical local cache keys include the model's filesystem path. A new portable
+path is not byte-identical to that historical cache identity; use saved results
+and request IDs for archival aggregation. Do not treat a relocated model or
+adapted source hash as an identical fresh run. The original development
+sources and all frozen artifacts remain unchanged outside the reviewer export.
+
+### Adapter Interfaces
+
+Paths below are explicit dependencies, not bundled artifacts. The commands
+document interfaces only; no generation, evaluation or aggregation run was
+performed for this source release. `--help` and syntax checks do not load models.
+
+| Entry point | Required resources and modes |
+| --- | --- |
+| `run_acl_component_llama_pointwise.py` | `prepare` or `run`; `--root MATRIX --model LLAMA_SNAPSHOT`; use recorded `--batch-size 16`; exact cache roots via repeated `--cache-root` |
+| `run_acl_component_pointwise.py` | `aggregate --root MATRIX` reads saved evaluations; `prepare` additionally needs `--frozen-contract-dir` and reviewed cache roots |
+| `run_independent.py` | `--root INDEPENDENT --model LLAMA_SNAPSHOT --batch-size 8`; historical separate pointwise queue |
+| `run_natural.py` | `--source-dir ORDINARY --checkpoint-dir RUN --mistral-model MISTRAL_SNAPSHOT --gemma-model GEMMA_SNAPSHOT`; expensive generation, not a documentation check |
+| `evaluate_natural.py` | `--source-dir ORDINARY --rubric-contract CORRECTED_POINTWISE_CONTRACT --llama-model LLAMA_SNAPSHOT --batch-size 8`; contract keys `prompts.system_prompt` / `user_template`; expensive local judging |
+| `run_ordinary_gpt_selector.py` | `verify --run-dir REPLAY` checks the saved snapshot and requests only; `aggregate` additionally requires `--evidence-audit` and a new `--output-dir`; no API or request-preparation mode |
+
+The ordinary adapter validates all 11 original snapshot hashes and the frozen
+request hash, rather than weakening the original checks to accept modified
+inputs. It also checks all 50 rendered prompts and question/response identities.
+Its aggregate outputs must go to a new directory outside the frozen run and
+snapshot. Natural generation/evaluation drivers refuse existing outputs before
+loading models; use a new authorized working directory, not a frozen run or
+a resume workflow. An authorized user
+still needs the private replay snapshot, judgments and evidence audit; this
+release does not make those inputs available.
+Matrix and independent queue/aggregation routines retain historical append or
+output-writing behavior under `--root`. Use authorized working copies of the
+required artifacts, never the frozen archival roots. Their presence is not a
+claim that every entry point is read-only.
 
 ## Public Reproduction Limits
 
-The base repository's dependency files do not establish an exact environment
-lock for all production stages. Production launchers also reference a local
+No tracked dependency/environment lock was verified for these production
+stages. Ordinary verification/aggregation imports NumPy; local model loading
+requires PyTorch, Transformers and Accelerate, and the existing model-training
+drivers have additional dependencies. Production launchers also reference a local
 Python environment, locally cached snapshots, and local kernel support.
 Package/CUDA/driver versions and portable path configuration require a separate
 verified release manifest. No fresh installation or environment compatibility
 test was performed here.
+Historical selection/extraction launchers also retain original commit and
+provenance checks in development. The reviewer copy replaces only the
+development-commit literal with `PRIVATE_PROVENANCE_COMMIT`; model and data
+revision pins are unchanged. A history-free source export does not satisfy
+those private execution dependencies merely by configuring model and data mounts.
 
 The inspected checkpoints and source/derived data are local dependencies, not
 included release assets. Exact construction also depends on recorded reviews
 and model/API outputs. Temperature zero does not itself establish identical
 future hosted-model output. A complete public reproduction claim therefore
-requires the integrated source, reviewed environment manifest, authorized
-dependencies, and the unresolved evaluation/selection artifacts above.
+requires the integrated source, reviewed environment manifest and authorized
+dependencies. The target Llama and ordinary-selection provenance is verified,
+but their private inputs/results and the expert study are not bundled assets.
 
 CIKM short, exp295, early corruption pilots, masked reconstruction variants,
 and unsuccessful/pilot training families remain preserved as historical work.
 They are not interchangeable with the frozen ACL production configuration.
 Older development notes are retained separately from reviewer-facing materials.
-Anonymous release risks, including machine paths and Git history, remain release
-blockers. Reviewer exports must exclude development history, manuscript archives, internal audit
-and verification documents, Appendix drafts, legacy notes and personal paths.
-This document does not authorize a history rewrite or dataset publication.
+From the development checkout, `scripts/export_acl_review.py` creates a new
+source-only directory using an explicit allowlist. The exporter itself is a
+development release tool, not included in the reviewer source directory. It
+excludes Git/history, manuscript archives, internal documents, legacy notes,
+data, completed expert ratings, checkpoints and logs, and checks syntax,
+dependency closure and path/identity exclusions. Exported machine-path literals
+refer to anonymous `/workspace` mounts; they are configuration placeholders,
+not available weights/data. The reviewed development-commit literal is also
+neutralized only in the export. No prompt or model setting is anonymized away.
+Only README and this guide are reviewer-facing documentation.
+
+The development GitHub repository and its history are not an anonymous mirror.
+Actual mirror contents, authentication-free reviewer access and environment
+compatibility remain separate release checks. This document does not authorize
+a history rewrite, dataset publication or upload of private evaluation records.

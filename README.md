@@ -7,18 +7,21 @@ both presentation orders.
 
 ## Implementation Status
 
-The integrated code contains the ACL construction/QC pipeline, frozen-data
-export, Router and Scorer training, SFT and complete-response refinement, and
-corrected TEST60 GPT selection and pointwise evaluation. Their source, original
-prompt definitions and recorded production settings have been checked against
-the integrated implementation. See [ACL reproducibility](docs/ACL_REPRODUCIBILITY.md)
-for the exact inventory and evidence limits.
+The code covers ACL construction/QC and export, Router/Scorer training,
+SFT/DPO and complete-response refinement, selective invocation, and corrected
+TEST60 GPT selection/evaluation. The auxiliary Llama and ordinary-draft
+evaluation routines are also preserved as narrowly scoped source adapters.
+Original prompts, recorded settings and saved result identities were checked
+against the latest reviewed manuscript. See
+[ACL reproducibility](docs/ACL_REPRODUCIBILITY.md) for the stage-by-stage paths,
+schemas, source fingerprints and limitations of the adapters.
 
 This establishes source availability for those stages, not a fresh end-to-end
 reproduction. Frozen counseling data, model checkpoints and execution manifests
-are separate dependencies. The Llama matrix and expert packet-building sources
-listed in the reproducibility record are not included in this checkout; some
-manuscript evaluation claims still lack a reconciled provenance trail.
+are separate dependencies. Saved records establish the Llama 58/60 table and
+the ordinary-draft GPT-Select eight-adoption result. Completed expert forms
+establish the reported means but remain private; agreement/procedural artifacts
+have separate availability limits recorded in the guide.
 
 ## ACL Method
 
@@ -51,8 +54,12 @@ manuscript evaluation claims still lack a reconciled provenance trail.
    question-response pairs share pointwise judgments across conditions. GPT
    selection and primary evaluation use the same model and are not independent.
    The manuscript reports counselor assessments of adopted revisions as a
-   separate evaluation, not expert ratings of every test response. Completed
-   expert ratings were not located in the inspected H100 artifacts.
+   separate evaluation, not expert ratings of every test response.
+7. **Ordinary-draft transfer.** Question-only Mistral drafts pass through the
+   same trained reconstruction/refinement stages. The saved 25 candidates are
+   compared in both orders by the frozen GPT selector; eight are adopted.
+   Final responses inherit the existing Llama judgments. The earlier seven-edit
+   `LegacyStrict` risk/lexical policy is a separate comparator, not this result.
 
 The manuscript's frozen partitions contain **276 training, 43 validation, and
 60 test questions**. A later TEST100 extension and residual-training experiments
@@ -81,18 +88,32 @@ documentation update, and the frozen TEST inputs and outputs were not changed.
 ## Anonymous Review Export
 
 Reviewer-facing documentation consists of this README and
-`docs/ACL_REPRODUCIBILITY.md`. Include only the inventoried ACL production
-sources and their reviewed helper dependencies in a separately checked export.
-Do not mirror the development checkout wholesale.
+`docs/ACL_REPRODUCIBILITY.md`. From the development checkout, prepare a new,
+history-free source directory using the explicit allowlist exporter:
+
+```bash
+python3 scripts/export_acl_review.py --destination /workspace/reviewer-source
+```
+
+The destination must not already exist and must be outside the checkout.
+The exporter includes only reviewed source/helper files, selected regression
+tests and these two documents. It validates syntax, dependencies and exclusions,
+and records source/export hashes. Machine-path literals in exported copies use
+anonymous `/workspace` mounts; configure those dependencies before execution.
+The historical development-commit check uses a private-provenance placeholder,
+not an identifying Git hash. It still needs the original private execution
+context. Prompt text and scientific settings are not rewritten. This is a source export,
+not a bundled environment or a completed reproduction.
 
 Exclude Git metadata/history, development PRs, internal audits and verification
 records, manuscript ZIP/source archives, Appendix working drafts, legacy notes,
 agent/handoff records, personal workstation paths, credentials, raw or derived
 data, judge queues/results, completed expert packets, checkpoints, logs and
-caches. The existing history and archive remain in development and are not
-review artifacts. Production scripts still contain machine-specific defaults
-and sibling-worktree dependencies; an anonymous portable export and its actual
-mirror access have not been verified. This update does not publish a mirror.
+caches. The existing history, archives and legacy code remain in development
+and are not review artifacts. Do not mirror the development checkout or its
+GitHub history wholesale. An actual anonymous mirror, its configured contents
+and reviewer access require separate verification; this update does not
+publish a mirror or authorize data redistribution.
 
 ## Data Access and Redistribution
 
