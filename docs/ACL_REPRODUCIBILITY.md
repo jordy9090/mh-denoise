@@ -275,10 +275,10 @@ The latest manuscript's shortened `Serialize(q,u,SFT,g)` notation does not
 change this serialization: its figure, training text and Appendix still
 describe both complete SFT fields.
 
-The implementation's oversampling comparison is `>= threshold`, while the
-manuscript writes `> threshold`. This boundary difference is documented, not
-silently fixed. No equivalence claim is made for hypothetical scores exactly
-equal to the threshold.
+The current oversampling comparison is `> threshold`, matching the manuscript.
+This source correction replaces the historical frozen comparison `>= threshold`;
+new runs do not oversample scores exactly equal to the threshold. Invocation
+still uses `> threshold`. Frozen training and evaluation were not rerun.
 The current stopword set in `scripts/selective_risk_refinement_utils.py` uses
 `you're`, matching the latest Appendix. This source correction replaces the
 historical frozen literal `youre`; the tokenizer retains internal apostrophes,
@@ -503,11 +503,13 @@ included-source hashes. DPO entry points already present in the repository
 are linked above; bounded evaluation adapters are described below.
 All code paths are repository-relative.
 
-Three included files differ from the earlier inspected source. The response
+Four included files differ from the earlier inspected source. The response
 utility now strips standalone/Markdown response labels and enclosing quotes;
 its prompt templates are unchanged, but extracted response bytes can differ.
 Its stopword literal was also corrected from historical `youre` to `you're`,
 as described above; saved evaluation outputs remain frozen.
+The refinement trainer's oversampling comparison was corrected from `>=` to
+`>`, matching the manuscript while preserving the recorded training artifacts.
 The refinement runner adds the explicit `surface_relaxed_v1` policy and logging
 alongside the legacy policy. The queue reader uses `splitlines()` rather than
 splitting only on newline. These changes prevent a blanket byte-equivalence
@@ -535,7 +537,7 @@ and the corrected TEST60 selector remain the evaluation dependencies.
 | `scripts/fullpaper_risk_contract.py` | Included | `0cc9656cf6c07d88f1fb84d4f3f0d61b082cb44d3e224a46b7c8f2c6be6c0c7b` |
 | `scripts/select_arr_valid_risk_thresholds.py` | Included | `3bb7b90eba16a7426bee346cf706e9d290974da1bf353668a523c960bbb24d5d` |
 | `scripts/build_sft_outputs_for_risk_tuning.py` | Included | `ad45155160961898614e2741a3a231895e45d6a635daf9975b44e75802b7fbe5` |
-| `scripts/train_gemma_risk_tune_from_sft.py` | Included | `a034a383226a09ee62dd9bcebf82b4f22e859208a7be56d9967f7442cb37be1b` |
+| `scripts/train_gemma_risk_tune_from_sft.py` | Included | `8ecd5e3d7eb3129b218c900fb1ddd45fe09130f092cf5994ba7877148ae1555b` |
 | `scripts/selective_risk_refinement_utils.py` | Included | `450d5b8582680ec7e494a9475fa3f8d0f25c187010492366bcf4823c5de04a99` |
 | `scripts/run_gemma_selective_risk_refinement.py` | Included | `1da35327b4609ecada24ffff08f66d4df8e14f718c083c7696daa43d8c9439c8` |
 | `scripts/build_frozen_revision2_test_partial_export.py` | Included | `087bbcf3ac571243bdb5f73d42937dd6bbeb4fded32945bb27663f0d26d0b0d9` |

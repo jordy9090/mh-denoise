@@ -125,7 +125,7 @@ def oversample_high_risk(rows: List[Dict], threshold: float, factor: int):
     high = 0
     for row in rows:
         out.append(row)
-        if float(row.get("sft_risk_score", 0.0)) >= threshold:
+        if float(row.get("sft_risk_score", 0.0)) > threshold:
             high += 1
             for _ in range(factor - 1):
                 out.append(dict(row))
