@@ -7,12 +7,14 @@ that a fresh public clone can reproduce every manuscript result.
 
 The manuscript source inspected was `acl_latex.tex`, SHA256
 `94334304dcc95f655ff46a6df7c2d8555a7cd39f27dec59a96319cc47b7b5db7`.
-The source-code snapshot inspected was commit
-`ec69e056873f72f8277648d2ec5318871051120b`. The documentation branch was created
-from `origin/main` at `756f42d`; most ACL production scripts listed below are
-absent at that base. They are **integration dependencies**, not working links or
-an already runnable public release. The final comparison against A100's
-integrated `main` is recorded separately in [ACL_VERIFICATION.md](ACL_VERIFICATION.md).
+The integrated implementation now contains the construction/QC, data export,
+risk models, SFT/refinement, and corrected TEST60 GPT selection/evaluation
+entry points. Their presence, original prompt definitions and production
+settings were checked statically against the saved execution evidence.
+The source inventory below distinguishes included implementation from four
+historical Llama/expert evaluation sources that are not included. Source
+presence does not establish availability of frozen data, weights or a complete
+evaluation reproduction.
 
 No training, generation, model loading, paid API calls, or TEST changes were
 performed for this documentation review. Local artifacts were read for schemas,
@@ -203,6 +205,11 @@ Its `router/training_manifest.json`, `scorer/training_manifest.json`,
 `gemma/sft/train_args.json`, and
 `gemma/proposed_mask_off/final/risk_tune_config.json` supply these settings:
 
+These are the frozen run settings, not an invitation to use every script's CLI
+defaults. Some generic defaults retain earlier token limits, threshold 0.35 or
+masked input modes. Reproduction must restore the recorded settings explicitly;
+the integrated first-backbone launcher records the production overrides.
+
 | Setting | SFT | Complete-response refinement |
 | --- | --- | --- |
 | Adapter initialization | New LoRA on pinned base | `gemma/sft/final` saved adapter |
@@ -331,9 +338,8 @@ corrections and introductions require paired per-question labels, not only
 aggregate yes rates. The selector and this evaluator share GPT-4.1, so this
 evaluation is not independent of the selection model.
 
-The paper's Llama main table is traceable to
-`acl_component_ablation_matrix_20261009_v1/publication/main_baselines_llama.tex`
-and `component_ablations_llama.tex`, implemented by
+The paper's Llama main table is traceable to retained publication tables
+`main_baselines_llama.tex` and `component_ablations_llama.tex`, implemented by
 `scripts/run_acl_component_pointwise.py` and
 `scripts/run_acl_component_llama_pointwise.py`. This matrix records 436
 expected distinct assessment assignments, including 384 new results and
@@ -346,17 +352,19 @@ The local model is `meta-llama/Llama-3.1-8B-Instruct`, revision
 self-contained public module path.
 
 However, the manuscript Appendix's 233 distinct assessments and 11 missing
-medical-specific rationales describe a separate private
-`manuscript_revision_fixed_policy_20261009/run_independent.py` run. That run
+medical-specific rationales describe a separate retained independent run. Its
+`run_independent.py` source is not included in this checkout. That run
 contains 60 SFT judgments with mean quality 3.2556, not the matrix's 58/3.149.
+Excluding the 11 missing medical rationales also does not reconcile the runs:
+the retained run's strict SFT subset has 55 judgments and mean quality 3.2424.
 The table and Appendix provenance need reconciliation before claiming exact
 reproduction of the independent evaluation. Missing-rationale inclusion and
 evidence-conformance policies must be reported for the particular result set;
 they cannot be transferred from one run to another.
 
-The ordinary-draft dependency is the private
-`manuscript_revision_fixed_policy_20261009/` directory, using `run_natural.py`,
-`evaluate_natural.py`, and `run_independent.py`. Its Mistral snapshot is
+The ordinary-draft generation/evaluation sources are `run_natural.py`,
+`evaluate_natural.py`, and `run_independent.py`; these are not included in this
+checkout. The recorded Mistral snapshot is
 `mistralai/Mistral-7B-Instruct-v0.3` revision
 `c170c708c41dac9275d15a8fff4eca08d52bab71`; the question-only input uses system
 message `You are a helpful assistant.`, greedy decoding, 16384 source tokens
@@ -366,68 +374,80 @@ question-response pairs. The private scripts are not a verified public
 repository entry point.
 
 The located `natural_final` artifact uses the lexical/risk rule and records
-seven adoptions. No frozen ordinary-draft two-order GPT decisions establishing
-the manuscript's eight adoptions and final quality 3.506 were located. Those
-selection and final-response claims remain unverified; ordinary candidate
-generation alone does not establish them.
+seven adoptions. Its final quality is 3.2278 with 22 medical yes labels, whereas
+the manuscript's GPT-selected row reports eight adoptions, quality 3.506 and
+20 medical yes labels. The ordinary SFT baseline (quality 3.3111, 21 medical
+yes) is traceable to existing judgments. No frozen ordinary-draft two-order
+GPT decisions and final-response identity map establishing the GPT-selected
+row were located. Those selection and final-response claims remain unverified;
+ordinary candidate generation alone does not establish them.
 
 `scripts/build_rubric_aligned_expert_packet.py` and its packet manifest document
 blinded forms, instructions and system mapping. Located TEST15x3 and TEST60x3
-packets are not completed ratings for the six adopted questions. The completed
-two-rater, six-question SFT/DPO/selected ratings, missing-value treatment,
+packets are not completed ratings for the six adopted questions. The located
+TEST15x3 form has 45 rows with no populated rating or rationale fields. The
+completed two-rater, six-question SFT/DPO/selected ratings, missing-value treatment,
 agreement-analysis code and recruitment/compensation records were not located.
 The archive also claims Korean instructions and an English translation in the
 supplement; neither was found in its 16-file inventory. Their actual
-production version and availability remain unverified.
+production six-question version and availability remain unverified. An existing
+English guide for a 15-question packet and Korean column labels do not establish
+the complete Korean/English instructions used for the reported six-question study.
 The expert means, agreement statistics and procedural claims therefore remain
 unverified by this workspace review. Do not treat packet generation as proof
 that expert assessment was completed or publicly released.
 
-## Source Fingerprints For Integration
+## Source Inventory
 
-These are SHA256 hashes of the **reviewed source snapshot**, not a claim that
-every file's current bytes were captured at historical execution time. Use
-them to compare the later A100 integration and review intentional differences.
-The TEST corruption contract explicitly matches the current runner and local
-QC hashes. Older regeneration contracts may pin different runner bytes.
+These are content fingerprints, not a claim that every included file's current
+bytes were captured at historical execution time. Of the 31 reviewed paths,
+27 are included and four Llama/expert evaluation paths are not included. The
+table records integrated-source hashes for included paths and historical-source
+hashes for unavailable paths. All paths are repository-relative.
 
-All paths are repository-relative. Except for the two SFT trainer/helper files,
-the listed primary files were absent from the documentation branch's `756f42d` base.
-Presence and content after integration must be checked separately.
+Three included files differ from the earlier inspected source. The response
+utility now strips standalone/Markdown response labels and enclosing quotes;
+its prompt templates are unchanged, but extracted response bytes can differ.
+The refinement runner adds the explicit `surface_relaxed_v1` policy and logging
+alongside the legacy policy. The queue reader uses `splitlines()` rather than
+splitting only on newline. These changes prevent a blanket byte-equivalence
+claim for a historical run. The TEST corruption runner and typed QC source
+fingerprints still match their recorded contract. Frozen response identities
+and the corrected TEST60 selector remain the evaluation dependencies.
 
-| Source path | SHA256 |
-| --- | --- |
-| `scripts/prepare_fullpaper_phase1.py` | `8eb19a3f1840c7b2681b3609d68c663d463498f6606551d03c7afa4357395131` |
-| `scripts/fullpaper_acl_pipeline.py` | `74ff3a8a271c1d1442d5763f566290aa34c9f5875e9a8b2635b50c8fe760a5e8` |
-| `scripts/run_clean_target_qc.py` | `df13e6141669f10a714f84ee325a68a608c46818f24354db96ef5c8de08b685c` |
-| `scripts/run_paired_generator_diagnostic.py` | `572288faf87fcd4ba7c94b372537c6f0b64004593674049fabcca8e2cc7bbc8d` |
-| `scripts/run_fullpaper_corruption_production.py` | `f4f5481bb7c3713582d5dab3ef098d9d703f110a8d2a48ae603ba0fc4a48b86f` |
-| `scripts/local_qwen_production_qc_v4.py` | `b06e342838c21c33eea369ce8ec64e06effa5a0b26fd0f350b1e05de24faee3d` |
-| `scripts/corruption_contract_v2.py` | `441f14b796d815d434fddde9380c24ff6c88c8b1b4c915f0260b57975fd2be41` |
-| `scripts/source_integrity_contract.py` | `ebc35a802cfa735d863fb121a29d1cece4036f77134704c86d6f523231867ffe` |
-| `scripts/rejudge_production_reuse_subset.py` | `387ca175eb92d94088550d4cf3ec2cc6026cd95bb6b36a879914b973c8aea5dc` |
-| `scripts/build_production_reuse_export.py` | `6ce42d8b7b4a57ed310a04a6bc9a641e73e2fe772e254c9aa41c6f16dcddd55b` |
-| `scripts/fullpaper_scorer_export_contract.py` | `d506f12d34e89415e03cfaca59a6baf080ed458fddfa48a90dd3f69289234973` |
-| `scripts/run_arr_revision2_first_backbone.sh` | `877d9834dc845a7234f210928fe54f12cad314034b90864ea20bd71fb9461818` |
-| `scripts/train_professor_peft_refiner_textonly.py` | `8f92d0cab089542845d657320496340847ea03c0fa0760935ca47d36d380821d` |
-| `scripts/train_professor_peft_refiner.py` | `b7dfa42f6cfb227050462e4a1cc18230038e32826528366781bfbb0e6487a846` |
-| `scripts/train_fullpaper_risk_model.py` | `f1d3a8ba11a888464c81776818962185202fa6b78c7edd98c1240d6202df3a25` |
-| `scripts/fullpaper_risk_contract.py` | `0cc9656cf6c07d88f1fb84d4f3f0d61b082cb44d3e224a46b7c8f2c6be6c0c7b` |
-| `scripts/select_arr_valid_risk_thresholds.py` | `3bb7b90eba16a7426bee346cf706e9d290974da1bf353668a523c960bbb24d5d` |
-| `scripts/build_sft_outputs_for_risk_tuning.py` | `ad45155160961898614e2741a3a231895e45d6a635daf9975b44e75802b7fbe5` |
-| `scripts/train_gemma_risk_tune_from_sft.py` | `a034a383226a09ee62dd9bcebf82b4f22e859208a7be56d9967f7442cb37be1b` |
-| `scripts/selective_risk_refinement_utils.py` | `510bd8bc1d0b842f96676aa54d349489d96cdf3fdff6d235a0ab1cf366512581` |
-| `scripts/run_gemma_selective_risk_refinement.py` | `b9625086dbb9cf9d6424d017a11fc37bb4a3ba10208fd7894d8e5f3b919c6a28` |
-| `scripts/build_frozen_revision2_test_partial_export.py` | `087bbcf3ac571243bdb5f73d42937dd6bbeb4fded32945bb27663f0d26d0b0d9` |
-| `scripts/prepare_rubric_aligned_gpt41_rejudge.py` | `d3f9c24436fab1c134e67e735c63d1ca3fe3e3911a44abb7d5941eeefd750185` |
-| `scripts/run_test60_rubric_aligned_selection.py` | `6cb515b79797d39f9e645099121ac1085fc413658238475b6af3da735f1a3314` |
-| `scripts/run_test40_extraction_fix.py` | `28a1f4b8212fd0c2a70e063cff4b8469964c2d44d6368d754c43653de0f6a3db` |
-| `scripts/run_corrected_test60_pointwise_publication.py` | `f5abfe7a0205fd8dbb25862ecf86cd1802de4de3610380c5f8fe5edc5b413325` |
-| `scripts/run_gpt41_checkpoint_queue.py` | `9579c506e27be4023deeb805d5e970cb8555a850e0f50e788efd082f1c8a5083` |
-| `scripts/run_llama_rubric_aligned_rejudge.py` | `f90ce48e73567b8da00ebf87e54913d577b9aefef97e9e4c6b4cc925c02f17bb` |
-| `scripts/run_acl_component_llama_pointwise.py` | `22ae33c6ee069e6a8bb7cfa60a5f322608922fd3584e09c98004f588d5869d82` |
-| `scripts/run_acl_component_pointwise.py` | `318bf071d08432d58eb256e8932d41c5700003756af826da78216c4b4fc76c8b` |
-| `scripts/build_rubric_aligned_expert_packet.py` | `b0d19af67d8ff7236b68f4d828cdf9172c1ed70f6e3fdccb7ea9f619808009d0` |
+| Source path | Availability | SHA256 |
+| --- | --- | --- |
+| `scripts/prepare_fullpaper_phase1.py` | Included | `8eb19a3f1840c7b2681b3609d68c663d463498f6606551d03c7afa4357395131` |
+| `scripts/fullpaper_acl_pipeline.py` | Included | `74ff3a8a271c1d1442d5763f566290aa34c9f5875e9a8b2635b50c8fe760a5e8` |
+| `scripts/run_clean_target_qc.py` | Included | `df13e6141669f10a714f84ee325a68a608c46818f24354db96ef5c8de08b685c` |
+| `scripts/run_paired_generator_diagnostic.py` | Included | `572288faf87fcd4ba7c94b372537c6f0b64004593674049fabcca8e2cc7bbc8d` |
+| `scripts/run_fullpaper_corruption_production.py` | Included | `f4f5481bb7c3713582d5dab3ef098d9d703f110a8d2a48ae603ba0fc4a48b86f` |
+| `scripts/local_qwen_production_qc_v4.py` | Included | `b06e342838c21c33eea369ce8ec64e06effa5a0b26fd0f350b1e05de24faee3d` |
+| `scripts/corruption_contract_v2.py` | Included | `441f14b796d815d434fddde9380c24ff6c88c8b1b4c915f0260b57975fd2be41` |
+| `scripts/source_integrity_contract.py` | Included | `ebc35a802cfa735d863fb121a29d1cece4036f77134704c86d6f523231867ffe` |
+| `scripts/rejudge_production_reuse_subset.py` | Included | `387ca175eb92d94088550d4cf3ec2cc6026cd95bb6b36a879914b973c8aea5dc` |
+| `scripts/build_production_reuse_export.py` | Included | `6ce42d8b7b4a57ed310a04a6bc9a641e73e2fe772e254c9aa41c6f16dcddd55b` |
+| `scripts/fullpaper_scorer_export_contract.py` | Included | `d506f12d34e89415e03cfaca59a6baf080ed458fddfa48a90dd3f69289234973` |
+| `scripts/run_arr_revision2_first_backbone.sh` | Included | `877d9834dc845a7234f210928fe54f12cad314034b90864ea20bd71fb9461818` |
+| `scripts/train_professor_peft_refiner_textonly.py` | Included | `8f92d0cab089542845d657320496340847ea03c0fa0760935ca47d36d380821d` |
+| `scripts/train_professor_peft_refiner.py` | Included | `b7dfa42f6cfb227050462e4a1cc18230038e32826528366781bfbb0e6487a846` |
+| `scripts/train_fullpaper_risk_model.py` | Included | `f1d3a8ba11a888464c81776818962185202fa6b78c7edd98c1240d6202df3a25` |
+| `scripts/fullpaper_risk_contract.py` | Included | `0cc9656cf6c07d88f1fb84d4f3f0d61b082cb44d3e224a46b7c8f2c6be6c0c7b` |
+| `scripts/select_arr_valid_risk_thresholds.py` | Included | `3bb7b90eba16a7426bee346cf706e9d290974da1bf353668a523c960bbb24d5d` |
+| `scripts/build_sft_outputs_for_risk_tuning.py` | Included | `ad45155160961898614e2741a3a231895e45d6a635daf9975b44e75802b7fbe5` |
+| `scripts/train_gemma_risk_tune_from_sft.py` | Included | `a034a383226a09ee62dd9bcebf82b4f22e859208a7be56d9967f7442cb37be1b` |
+| `scripts/selective_risk_refinement_utils.py` | Included | `58c129810f51de62e3a6f98ba56105b7836526e821b221e0f39da856fc3ca020` |
+| `scripts/run_gemma_selective_risk_refinement.py` | Included | `1da35327b4609ecada24ffff08f66d4df8e14f718c083c7696daa43d8c9439c8` |
+| `scripts/build_frozen_revision2_test_partial_export.py` | Included | `087bbcf3ac571243bdb5f73d42937dd6bbeb4fded32945bb27663f0d26d0b0d9` |
+| `scripts/prepare_rubric_aligned_gpt41_rejudge.py` | Included | `d3f9c24436fab1c134e67e735c63d1ca3fe3e3911a44abb7d5941eeefd750185` |
+| `scripts/run_test60_rubric_aligned_selection.py` | Included | `6cb515b79797d39f9e645099121ac1085fc413658238475b6af3da735f1a3314` |
+| `scripts/run_test40_extraction_fix.py` | Included | `28a1f4b8212fd0c2a70e063cff4b8469964c2d44d6368d754c43653de0f6a3db` |
+| `scripts/run_corrected_test60_pointwise_publication.py` | Included | `f5abfe7a0205fd8dbb25862ecf86cd1802de4de3610380c5f8fe5edc5b413325` |
+| `scripts/run_gpt41_checkpoint_queue.py` | Included | `fb089db0ba1fdddb08dc1981fb10530deb7b1edfdcf7af3f07eb601f62649ead` |
+| `scripts/run_llama_rubric_aligned_rejudge.py` | Not included | `f90ce48e73567b8da00ebf87e54913d577b9aefef97e9e4c6b4cc925c02f17bb` |
+| `scripts/run_acl_component_llama_pointwise.py` | Not included | `22ae33c6ee069e6a8bb7cfa60a5f322608922fd3584e09c98004f588d5869d82` |
+| `scripts/run_acl_component_pointwise.py` | Not included | `318bf071d08432d58eb256e8932d41c5700003756af826da78216c4b4fc76c8b` |
+| `scripts/build_rubric_aligned_expert_packet.py` | Not included | `b0d19af67d8ff7236b68f4d828cdf9172c1ed70f6e3fdccb7ea9f619808009d0` |
 
 ## Public Reproduction Limits
 
@@ -448,6 +468,8 @@ dependencies, and the unresolved evaluation/selection artifacts above.
 CIKM short, exp295, early corruption pilots, masked reconstruction variants,
 and unsuccessful/pilot training families remain preserved as historical work.
 They are not interchangeable with the frozen ACL production configuration.
-See [LEGACY.md](LEGACY.md) for the scope distinction. Anonymous release risks,
-including machine paths and Git history, are tracked separately; no history
-rewrite or dataset publication is authorized by this document.
+Older development notes are retained separately from reviewer-facing materials.
+Anonymous release risks, including machine paths and Git history, remain release
+blockers. Reviewer exports must exclude development history, manuscript archives, internal audit
+and verification documents, Appendix drafts, legacy notes and personal paths.
+This document does not authorize a history rewrite or dataset publication.

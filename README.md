@@ -7,14 +7,18 @@ both presentation orders.
 
 ## Implementation Status
 
-This documentation branch was started from public `main` at `756f42d`. That
-snapshot contains the earlier CIKM/exp295 implementation and the manuscript
-archive, but does **not** contain most ACL production entry points. The ACL code
-and saved execution records were inspected in a separate research checkout.
-Integration into public `main` is pending verification; this checkout must not be
-treated as a complete runnable ACL release. See the dated
-[verification record](docs/ACL_VERIFICATION.md) for the last checked remote
-revision, missing files, and remaining checks.
+The integrated code contains the ACL construction/QC pipeline, frozen-data
+export, Router and Scorer training, SFT and complete-response refinement, and
+corrected TEST60 GPT selection and pointwise evaluation. Their source, original
+prompt definitions and recorded production settings have been checked against
+the integrated implementation. See [ACL reproducibility](docs/ACL_REPRODUCIBILITY.md)
+for the exact inventory and evidence limits.
+
+This establishes source availability for those stages, not a fresh end-to-end
+reproduction. Frozen counseling data, model checkpoints and execution manifests
+are separate dependencies. The Llama matrix and expert packet-building sources
+listed in the reproducibility record are not included in this checkout; some
+manuscript evaluation claims still lack a reconciled provenance trail.
 
 ## ACL Method
 
@@ -57,23 +61,38 @@ Earlier development comparisons in the manuscript also use different protocols.
 
 ## Reproducibility and Review Artifacts
 
-- [ACL reproducibility](docs/ACL_REPRODUCIBILITY.md): production code, original
-  prompt locations, model identities, settings, schemas, dependencies, execution
-  order, evaluation, and evidence limits.
-- [Verification record](docs/ACL_VERIFICATION.md): static checks and the status of
-  reconciliation with the latest public code.
-- [Anonymous artifact preparation](docs/ACL_ANONYMIZATION.md): inspected identity
-  leaks, proposed source-export changes, mirror status, and history blockers.
-- [Minimal Appendix addition](docs/ACL_APPENDIX_ADDITION.tex): artifact and
-  reproducibility wording for author review.
-- [Legacy index](docs/LEGACY.md): retained CIKM, exp295, pilot, and experimental
-  material. Historical claims and commands in these notes describe those runs.
+[ACL reproducibility](docs/ACL_REPRODUCIBILITY.md) records production code,
+original prompt locations, model identities, settings, schemas, dependencies,
+execution order, evaluation, and evidence limits.
+
+Older CIKM/exp295 notes, pilots, unsuccessful or incomplete experimental
+alternatives, and deprecated scripts are retained in the development repository
+as **legacy**. Their claims and settings do not define the ACL production
+protocol. Shared utilities are production components only where the inventory
+identifies their actual use. Later TEST100 and residual-training runs also
+remain separate from the manuscript's TEST60.
 
 Saved local manifests support the evidence described in the reproducibility
 document; they are not proof that a clean public checkout can reproduce the
 entire pipeline. Training, generation, judge calls, and data access require
 dependencies that are not bundled here. No new experiment was run for this
 documentation update, and the frozen TEST inputs and outputs were not changed.
+
+## Anonymous Review Export
+
+Reviewer-facing documentation consists of this README and
+`docs/ACL_REPRODUCIBILITY.md`. Include only the inventoried ACL production
+sources and their reviewed helper dependencies in a separately checked export.
+Do not mirror the development checkout wholesale.
+
+Exclude Git metadata/history, development PRs, internal audits and verification
+records, manuscript ZIP/source archives, Appendix working drafts, legacy notes,
+agent/handoff records, personal workstation paths, credentials, raw or derived
+data, judge queues/results, completed expert packets, checkpoints, logs and
+caches. The existing history and archive remain in development and are not
+review artifacts. Production scripts still contain machine-specific defaults
+and sibling-worktree dependencies; an anonymous portable export and its actual
+mirror access have not been verified. This update does not publish a mirror.
 
 ## Data Access and Redistribution
 

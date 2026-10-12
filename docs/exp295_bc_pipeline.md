@@ -1,9 +1,5 @@
 # Exp295 B/C Pipeline
 
-> **Legacy: CIKM/exp295 development.** Retained for provenance; this is not the
-> final ACL ARR 2026 production protocol. See [LEGACY.md](LEGACY.md) and
-> [ACL_REPRODUCIBILITY.md](ACL_REPRODUCIBILITY.md).
-
 This note covers only method components B and C for the exp295/v2 denoising pipeline.
 It intentionally keeps component D, aspect-specific expert LoRA MoE, out of scope.
 
