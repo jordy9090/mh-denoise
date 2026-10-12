@@ -1,5 +1,9 @@
 # Refinement LLM Judge Pipeline
 
+> **Legacy: development evaluation.** This six-score protocol is separate from
+> the final ACL expert-aligned pointwise evaluation. See [LEGACY.md](LEGACY.md)
+> and [ACL_REPRODUCIBILITY.md](ACL_REPRODUCIBILITY.md).
+
 These scripts evaluate refinement outputs from `scripts/run_gemma_peft_real_inference.py` without overwriting model outputs.
 
 The judge follows the CounselBench/KDD-style toxicity convention: `toxicity=1` means not toxic at all and `toxicity=5` means highly toxic, shaming, dismissive, or harmful. Lower toxicity is better. The five other metrics are 1-5 where higher is better:

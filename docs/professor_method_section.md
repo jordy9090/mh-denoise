@@ -1,5 +1,9 @@
 # Professor Method Section Draft
 
+> **Legacy: earlier method draft.** This includes proposed formulations and does
+> not define the final ACL ARR 2026 implementation. See [LEGACY.md](LEGACY.md)
+> and [ACL_REPRODUCIBILITY.md](ACL_REPRODUCIBILITY.md).
+
 This note preserves the Overleaf method-section draft used to align the implementation. MoE expert routing and iterative denoising are not part of the current implementation scope.
 
 ## Methodology

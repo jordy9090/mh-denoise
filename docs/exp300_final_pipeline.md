@@ -1,5 +1,9 @@
 # Exp295 Final Denoising Pipeline
 
+> **Legacy: CIKM/exp295 development.** "Final" refers to that historical run,
+> not the ACL ARR 2026 production protocol. See [LEGACY.md](LEGACY.md) and
+> [ACL_REPRODUCIBILITY.md](ACL_REPRODUCIBILITY.md).
+
 This file is kept at `docs/exp300_final_pipeline.md` for continuity with the earlier plan, but the actual A100 run now uses `exp295` paths.
 
 The final safe-target pool is:

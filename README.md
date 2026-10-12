@@ -1,87 +1,95 @@
-# SFT-First Selective Risk-Aware Denoising for Mental-Health QA
+# SFT-First Selective Refinement for Mental-Health Question Answering
 
-This repository contains the implementation and experiment scripts for our CIKM 2026 Short Paper submission:
+Documentation for the ACL ARR 2026 manuscript and its production implementation.
+The method refines a complete SFT response when residual risk warrants another
+generation, then retains the candidate only when a frozen selector prefers it in
+both presentation orders.
 
-**SFT-First Selective Risk-Aware Denoising for Mental-Health Question Answering**
+## Implementation Status
 
-## Overview
+This documentation branch was started from public `main` at `756f42d`. That
+snapshot contains the earlier CIKM/exp295 implementation and the manuscript
+archive, but does **not** contain most ACL production entry points. The ACL code
+and saved execution records were inspected in a separate research checkout.
+Integration into public `main` is pending verification; this checkout must not be
+treated as a complete runnable ACL release. See the dated
+[verification record](docs/ACL_VERIFICATION.md) for the last checked remote
+revision, missing files, and remaining checks.
 
-The project studies response refinement for safety-sensitive mental-health question answering. The pipeline first applies an SFT-based refiner to improve the full response, then invokes a localized denoising stage only when residual risk remains.
+## ACL Method
 
-The core workflow is:
+1. **Reference screening and corruption.** QC1 screens references from
+   MentalChat16K and CounselChat. Minimal, aspect-guided corruption is followed
+   by blinded QC2 assessment. Requested edits and **observed aspect labels** are
+   distinct: the Router learns the degradation judged by QC2. Verified local
+   evidence and observation masks provide span-risk supervision.
+2. **SFT-first reconstruction.** An SFT adapter reconstructs the screened
+   reference from the question and corrupted response.
+3. **Router and span-risk Scorer.** The Router estimates response-level risk
+   across six aspects: overall quality, empathy, specificity, medical-boundary
+   control (`medical_boundary` in production supervision),
+   factual consistency, and toxicity. The Scorer estimates aspect risk for local
+   passages; the combined estimates support invocation and training-example
+   sampling.
+4. **Complete-response refinement.** A refinement adapter initialized from SFT
+   reconstructs a complete response conditioned on the aspect signal. In the
+   manuscript's production condition the draft field contains the full SFT
+   response, masking is disabled, and target tokens have uniform loss weights.
+   Local evidence supports risk estimation; generation is not a span-only edit.
+5. **Selective invocation and acceptance.** Frozen validation-selected settings
+   and response triggers determine whether to generate a candidate. The frozen
+   `gpt-4.1-2025-04-14` selector compares SFT and the candidate in both A/B and B/A
+   orders. Adoption requires the candidate to win both; a tie, disagreement, or
+   invalid decision retains SFT.
+6. **Automatic and expert evaluation.** Pointwise GPT-4.1 and independent
+   Llama-3.1-8B-Instruct assessments measure overall quality, empathy,
+   specificity, and medical-boundary advice under an explicit rubric. Identical
+   question-response pairs share pointwise judgments across conditions. GPT
+   selection and primary evaluation use the same model and are not independent.
+   The manuscript reports counselor assessments of adopted revisions as a
+   separate evaluation, not expert ratings of every test response. Completed
+   expert ratings were not located in the inspected H100 artifacts.
 
-1. **SFT-first refinement** of the initial response.
-2. **Residual-risk detection** across safety-sensitive aspects.
-3. **Aspect routing and span-level risk localization** to identify the part of the response that requires repair.
-4. **LoRA-based denoising** on the localized risky span.
-5. **Selective acceptance** of the candidate only when risk does not increase and response specificity is preserved.
+The manuscript's frozen partitions contain **276 training, 43 validation, and
+60 test questions**. A later TEST100 extension and residual-training experiments
+are separate research runs, not replacements for the reported TEST60 results.
+Earlier development comparisons in the manuscript also use different protocols.
 
-The goal is to repair localized residual failures while preserving the empathy, specificity, and overall quality already achieved by the SFT refiner.
+## Reproducibility and Review Artifacts
 
-## Main Components
+- [ACL reproducibility](docs/ACL_REPRODUCIBILITY.md): production code, original
+  prompt locations, model identities, settings, schemas, dependencies, execution
+  order, evaluation, and evidence limits.
+- [Verification record](docs/ACL_VERIFICATION.md): static checks and the status of
+  reconciliation with the latest public code.
+- [Anonymous artifact preparation](docs/ACL_ANONYMIZATION.md): inspected identity
+  leaks, proposed source-export changes, mirror status, and history blockers.
+- [Minimal Appendix addition](docs/ACL_APPENDIX_ADDITION.tex): artifact and
+  reproducibility wording for author review.
+- [Legacy index](docs/LEGACY.md): retained CIKM, exp295, pilot, and experimental
+  material. Historical claims and commands in these notes describe those runs.
 
-- `scripts/generate_unsafe_samples.py`: generate aspect-guided unsafe corruptions from safe targets.
-- `scripts/generate_scaled_semantic_corruptions.py`: generate scaled semantic corruption variants.
-- `scripts/prepare_counselbench_eval_100.py`: prepare strict safe targets from CounselBench-Eval.
-- `scripts/prepare_counselchat_safe_candidates.py`: prepare candidate safe targets from CounselChat.
-- `scripts/judge_counselchat_safe_candidates.py`: evaluate CounselChat candidates for use as safe targets.
-- `scripts/merge_safe_targets_exp300.py`: merge the final safe-target pool.
-- `scripts/build_refinement_eval_inputs.py`: construct evaluation inputs for the refinement pipeline.
-- `scripts/aggregate_refinement_judge.py`: aggregate LLM-judge refinement results.
-- `scripts/aggregate_refinement_judge_scores.py`: summarize evaluation scores.
-- `scripts/inspect_refinement_outputs.py`: inspect final response-refinement outputs.
+Saved local manifests support the evidence described in the reproducibility
+document; they are not proof that a clean public checkout can reproduce the
+entire pipeline. Training, generation, judge calls, and data access require
+dependencies that are not bundled here. No new experiment was run for this
+documentation update, and the frozen TEST inputs and outputs were not changed.
 
-Detailed experiment notes are available in `docs/`.
+## Data Access and Redistribution
 
-## Data and Experimental Setup
+This change does **not** release a dataset. Users must obtain the original
+MentalChat16K and CounselChat resources from their providers and satisfy their
+access terms and applicable permissions. CounselBench is used as an assessment
+framework in the ACL protocol; the older CounselBench-Eval target-pool workflow
+belongs to the legacy experiments.
 
-The final documented training pipeline uses a mixed pool of safe mental-health responses drawn from CounselBench-Eval and judged CounselChat candidates. Aspect-guided corruptions are generated to create unsafe/reference pairs for training the residual-risk repair component.
+Permission to access or use original data is separate from permission to
+redistribute derived question-response pairs, corruptions, evidence passages,
+annotations, or generated responses. A source-code release does not establish
+those redistribution rights. No derived dataset, counselor packet, checkpoint,
+or raw response release is authorized or promised here. The availability and
+redistribution status of each such artifact remain to be resolved separately.
 
-The repository does not redistribute restricted data, private API credentials, large checkpoints, or full generated response files.
-
-## Evaluation
-
-The experiments evaluate both response quality and safety, including:
-
-- overall response quality,
-- empathy,
-- specificity,
-- factual consistency,
-- toxicity,
-- medical-boundary violations.
-
-The evaluation pipeline compares the initial unsafe response, SFT refinement, risk-aware denoising variants, and selective risk-aware refinement.
-
-## Repository Structure
-
-```text
-mh-denoise/
-├── README.md
-├── docs/
-│   ├── exp295_bc_pipeline.md
-│   ├── exp300_final_pipeline.md
-│   ├── experiment_context_expanded_denoising.md
-│   ├── professor_method_section.md
-│   └── refinement_judge_pipeline.md
-└── scripts/
-    ├── generate_unsafe_samples.py
-    ├── generate_scaled_semantic_corruptions.py
-    ├── prepare_counselbench_eval_100.py
-    ├── prepare_counselchat_safe_candidates.py
-    ├── judge_counselchat_safe_candidates.py
-    ├── merge_safe_targets_exp300.py
-    ├── build_refinement_eval_inputs.py
-    ├── aggregate_refinement_judge.py
-    ├── aggregate_refinement_judge_scores.py
-    └── inspect_refinement_outputs.py
-```
-
-## Reproducibility Notes
-
-The experiment documentation under `docs/` records the data-preparation and training/evaluation pipeline used during development. Some scripts depend on external datasets, Hugging Face models, or OpenAI-based evaluation and therefore require the corresponding credentials and licenses.
-
-API keys should be supplied through environment variables and must not be hard-coded in source files.
-
-## Status
-
-This repository accompanies a research prototype and is intended to support transparency and reproducibility of the reported experiments.
+Credentials belong in environment variables or local secret configuration.
+Local `.env` files, datasets, checkpoints, caches, and generated experiment
+outputs must stay out of the reviewer export.

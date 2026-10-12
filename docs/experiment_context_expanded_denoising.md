@@ -1,5 +1,9 @@
 # Expanded Denoising Experiment Context
 
+> **Legacy: CIKM pilot and expansion plan.** Settings and results below are
+> historical and are not the final ACL ARR 2026 protocol. See
+> [LEGACY.md](LEGACY.md) and [ACL_REPRODUCIBILITY.md](ACL_REPRODUCIBILITY.md).
+
 ## Goal
 
 We are preparing the final experiment for a CIKM short paper on risk-aware response denoising for mental-health QA.
