@@ -54,7 +54,16 @@ def main() -> None:
     parser.add_argument("--target-limit", type=int, default=160)
     parser.add_argument("--dpo-prompt-limit", type=int, default=768)
     parser.add_argument("--dpo-completion-limit", type=int, default=512)
+    parser.add_argument(
+        "--splits",
+        default="train,valid",
+        help="Comma-separated canonical splits to audit (default: train,valid)",
+    )
     args = parser.parse_args()
+
+    splits = tuple(item.strip() for item in args.splits.split(",") if item.strip())
+    if not splits or not set(splits) <= {"train", "valid", "test"}:
+        raise ValueError("--splits must contain only train, valid, and/or test")
 
     data = Path(args.data_dir).resolve()
     tokenizer_path = Path(args.tokenizer).resolve()
@@ -64,7 +73,7 @@ def main() -> None:
 
     details = []
     summary = {}
-    for split in ("train", "valid"):
+    for split in splits:
         source_path = data / f"sft_{split}.jsonl"
         dpo_path = data / f"dpo_{split}.jsonl"
         rows = read_jsonl(source_path)
@@ -155,7 +164,7 @@ def main() -> None:
         },
         "inputs": {
             name: {"sha256": sha256(data / name)}
-            for split in ("train", "valid")
+            for split in splits
             for name in (f"sft_{split}.jsonl", f"dpo_{split}.jsonl")
         },
         "configured_limits": {
